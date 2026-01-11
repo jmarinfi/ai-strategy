@@ -1,7 +1,7 @@
 """CCXT-based data fetcher implementation."""
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 import ccxt.async_support as ccxt
 import pandas as pd
@@ -33,7 +33,7 @@ class CCXTFetcher(BaseFetcher):
         """
         super().__init__(exchange_id, sandbox)
         exchange_class = getattr(ccxt, exchange_id)
-        self.exchange: ccxt.Exchange = exchange_class(
+        self.exchange = exchange_class(
             {
                 "enableRateLimit": True,
             }
@@ -46,7 +46,7 @@ class CCXTFetcher(BaseFetcher):
         """Ensure markets are loaded before operations."""
         if not self.symbols:
             await self.exchange.load_markets()
-            self.symbols = list(self.exchange.symbols)
+            self.symbols = self.exchange.symbols or []
 
     def _get_bitget_params(
         self, paginate: bool = True, until: Optional[int] = None
@@ -64,7 +64,7 @@ class CCXTFetcher(BaseFetcher):
             These parameters are Bitget-specific. For other exchanges,
             this method should be extended or overridden.
         """
-        params = {"uta": False, "paginate": paginate}
+        params: dict = {"uta": False, "paginate": paginate}
         if until is not None:
             params["until"] = until
         return params
@@ -105,7 +105,7 @@ class CCXTFetcher(BaseFetcher):
         return self._to_dataframe(candles)
 
     async def fetch_ohlcv_range(
-        self, symbol: str, timeframe: str, start: int, end: int
+        self, symbol: str, timeframe: str, start_ts: int, end_ts: int
     ) -> pd.DataFrame:
         """Fetch OHLCV data for a specific time range with manual pagination.
 
@@ -138,12 +138,12 @@ class CCXTFetcher(BaseFetcher):
             raise ValueError(f"Symbol {symbol} not found on {self.exchange_id}")
 
         all_candles: list = []
-        current_since = start
+        current_since = start_ts
         batch_limit = 1000  # Safe limit for most exchanges
 
-        while current_since < end:
-            params = self._get_bitget_params(paginate=False, until=end)
-            candles = await self.exchange.fetch_ohlcv(
+        while current_since < end_ts:
+            params = self._get_bitget_params(paginate=False, until=end_ts)
+            candles: list[Any] = await self.exchange.fetch_ohlcv(
                 symbol, timeframe, current_since, batch_limit, params=params
             )
 
@@ -151,7 +151,7 @@ class CCXTFetcher(BaseFetcher):
                 break
 
             # Filter candles within the range
-            candles = [c for c in candles if c[0] <= end]
+            candles = [c for c in candles if c[0] <= end_ts]
             if not candles:
                 break
 
@@ -159,7 +159,7 @@ class CCXTFetcher(BaseFetcher):
 
             # Move to next batch
             last_timestamp = candles[-1][0]
-            if len(candles) < batch_limit or last_timestamp >= end:
+            if len(candles) < batch_limit or last_timestamp >= end_ts:
                 break
 
             # Advance past the last candle to avoid duplicates
@@ -178,7 +178,7 @@ class CCXTFetcher(BaseFetcher):
 
         return self._to_dataframe(unique_candles)
 
-    def _to_dataframe(self, candles: list) -> pd.DataFrame:
+    def _to_dataframe(self, candles: list[Any]) -> pd.DataFrame:
         """Convert candles list to DataFrame.
 
         Args:
@@ -188,7 +188,8 @@ class CCXTFetcher(BaseFetcher):
             DataFrame with standard OHLCV columns.
         """
         return pd.DataFrame(
-            candles, columns=["timestamp", "open", "high", "low", "close", "volume"]
+            data=candles,
+            columns=["timestamp", "open", "high", "low", "close", "volume"],
         )
 
     async def get_available_symbols(self) -> list[str]:

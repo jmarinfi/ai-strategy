@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "ccxt>=4.5.32",
     "pandas>=2.3.3",
+    "pandas-stubs>=2.3.3.251219",
 ]
 
 [dependency-groups]

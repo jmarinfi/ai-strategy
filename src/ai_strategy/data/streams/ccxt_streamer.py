@@ -1,0 +1,195 @@
+"""CCXT-based streamer implementation for real-time market data."""
+
+import asyncio
+import logging
+from collections.abc import AsyncGenerator
+from typing import Any
+
+import ccxt.pro as ccxtpro
+
+from src.ai_strategy.data.streams.streamer_base import BaseStreamer
+
+logger = logging.getLogger(__name__)
+
+
+class CCXTStreamer(BaseStreamer):
+    """CCXT Pro implementation of the real-time data streamer.
+
+    This streamer uses ccxt.pro WebSocket functionality to receive
+    real-time ticker updates from cryptocurrency exchanges.
+
+    Note:
+        Currently configured for Bitget. The `uta=False` parameter is
+        Bitget-specific (disables unified trading account mode).
+        For other exchanges, this may need adjustment.
+    """
+
+    def __init__(
+        self, exchange_id: str, symbols: list[str], sandbox: bool = False
+    ) -> None:
+        """Initialize the CCXT streamer.
+
+        Args:
+            exchange_id: The ccxt exchange identifier (e.g., 'bitget').
+            symbols: List of trading pair symbols (e.g., ['BTC/USDT', 'ETH/USDT']).
+            sandbox: Whether to use the exchange's sandbox/testnet mode.
+        """
+        super().__init__(exchange_id, symbols, sandbox)
+        exchange_class = getattr(ccxtpro, exchange_id)
+        self.exchange: Any = exchange_class(
+            {
+                "enableRateLimit": True,
+            }
+        )
+        if sandbox:
+            self.exchange.set_sandbox_mode(True)
+        self._connected: bool = False
+        self._max_retries: int = 100
+        self._base_delay: float = 1.0  # Initial delay in seconds
+        self._max_delay: float = 60.0  # Maximum delay in seconds
+
+    async def connect(self) -> None:
+        """Establish connection by loading markets.
+
+        This prepares the exchange for WebSocket operations by
+        loading available markets and symbols.
+        """
+        if not self._connected:
+            await self.exchange.load_markets()
+            # Validate that all requested symbols exist
+            for symbol in self.symbols:
+                if symbol not in self.exchange.symbols:
+                    raise ValueError(f"Symbol {symbol} not found on {self.exchange_id}")
+            self._connected = True
+
+    async def watch_tickers(self) -> AsyncGenerator[dict[str, Any], None]:
+        """Watch real-time ticker updates for all configured symbols.
+
+        Continuously polls for ticker updates and yields them as they arrive.
+        Each call to watch_tickers on the exchange returns the latest ticker(s).
+
+        Yields:
+            dict containing ticker data with fields:
+                - symbol: The trading pair symbol
+                - last: Last traded price
+                - bid: Best bid price
+                - ask: Best ask price
+                - high: 24h high price
+                - low: 24h low price
+                - baseVolume: 24h base volume
+                - quoteVolume: 24h quote volume
+                - timestamp: Update timestamp in milliseconds
+                - datetime: ISO8601 datetime string
+                - info: Raw exchange response
+
+        Raises:
+            ConnectionError: If not connected.
+        """
+        if not self._connected:
+            raise ConnectionError(
+                "Streamer not connected. Call connect() or use async with."
+            )
+
+        params = {"uta": False}  # Bitget-specific: disable unified trading account
+
+        retries = 0
+        delay = self._base_delay
+
+        while True:
+            try:
+                # watch_tickers returns a dict of tickers keyed by symbol
+                tickers = await self.exchange.watch_tickers(self.symbols, params)
+
+                # Reset retry counter on successful fetch
+                retries = 0
+                delay = self._base_delay
+
+                # Yield each ticker individually
+                for symbol, ticker in tickers.items():
+                    if symbol in self.symbols:
+                        yield self._normalize_ticker(ticker)
+
+            except Exception as e:
+                retries += 1
+                error_msg = str(e).lower()
+
+                if retries > self._max_retries:
+                    logger.error(
+                        f"Max retries ({self._max_retries}) exceeded. Giving up."
+                    )
+                    raise ConnectionError(
+                        f"Failed to recover after {self._max_retries} retries: {error_msg}"
+                    ) from e
+
+                logger.warning(
+                    f"Error in watch_tickers (attempt {retries}/{self._max_retries}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+
+                await asyncio.sleep(delay)
+
+                # Exponential backoff with cap
+                delay = min(delay * 2, self._max_delay)
+
+                try:
+                    self._connected = False
+                    await self.exchange.close()
+                except Exception:
+                    pass  # Ignore errors when closing broken connection
+                await self.connect()
+
+    def _normalize_ticker(self, ticker: dict[str, Any]) -> dict[str, Any]:
+        """Normalize ticker data to a consistent format.
+
+        Args:
+            ticker: Raw ticker from ccxt.
+
+        Returns:
+            Normalized ticker dictionary.
+        """
+        return {
+            "symbol": ticker.get("symbol"),
+            "timestamp": ticker.get("timestamp"),
+            "datetime": ticker.get("datetime"),
+            "high": ticker.get("high"),
+            "low": ticker.get("low"),
+            "bid": ticker.get("bid"),
+            "bidVolume": ticker.get("bidVolume"),
+            "ask": ticker.get("ask"),
+            "askVolume": ticker.get("askVolume"),
+            "open": ticker.get("open"),
+            "close": ticker.get("close"),
+            "last": ticker.get("last"),
+            "change": ticker.get("change"),
+            "percentage": ticker.get("percentage"),
+            "baseVolume": ticker.get("baseVolume"),
+            "quoteVolume": ticker.get("quoteVolume"),
+            "info": ticker.get("info"),
+        }
+
+    async def unsubscribe(self, symbols: list[str] | None = None) -> None:
+        """Unsubscribe from ticker updates for specified symbols.
+
+        Args:
+            symbols: List of symbols to unsubscribe from.
+                     If None, unsubscribes from all symbols.
+
+        Note:
+            Uses Bitget-specific un_watch_ticker method.
+            For other exchanges, this may need adjustment.
+        """
+        targets = symbols if symbols is not None else self.symbols.copy()
+
+        for symbol in targets:
+            try:
+                await self.exchange.un_watch_ticker(symbol, {"uta": False})
+                if symbol in self.symbols:
+                    self.symbols.remove(symbol)
+            except Exception:
+                # Some exchanges may not support unsubscribe, ignore errors
+                pass
+
+    async def close(self) -> None:
+        """Close the WebSocket connection and release resources."""
+        self._connected = False
+        await self.exchange.close()
