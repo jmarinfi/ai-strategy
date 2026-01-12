@@ -1,6 +1,5 @@
 """Tests for CCXTStreamer with mocked WebSocket functionality."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -447,45 +446,45 @@ class TestReconnection:
         assert mock_exchange.close.called
 
 
-class TestNormalizeTicker:
-    """Tests for _normalize_ticker method."""
+class TestParseTicker:
+    """Tests for parse_ticker method."""
 
     @patch("src.ai_strategy.data.streams.ccxt_streamer.ccxtpro")
-    def test_normalize_ticker_extracts_all_fields(self, mock_ccxtpro):
-        """Test that _normalize_ticker extracts all expected fields."""
+    def test_parse_ticker_extracts_all_fields(self, mock_ccxtpro):
+        """Test that parse_ticker extracts all expected fields."""
         mock_ccxtpro.bitget = MagicMock()
 
         streamer = CCXTStreamer("bitget", ["BTC/USDT"])
         ticker = generate_ticker("BTC/USDT", 50000.0)
 
-        result = streamer._normalize_ticker(ticker)
+        result = streamer.parse_ticker(ticker)
 
-        assert result["symbol"] == "BTC/USDT"
-        assert result["timestamp"] == 1700000000000
-        assert result["datetime"] == "2023-11-14T22:13:20.000Z"
-        assert result["high"] == 50000.0 * 1.05
-        assert result["low"] == 50000.0 * 0.95
-        assert result["bid"] == 49990.0
-        assert result["ask"] == 50010.0
-        assert result["last"] == 50000.0
-        assert result["baseVolume"] == 1000.0
-        assert result["info"] == {"raw": "data"}
+        assert result.symbol == "BTC/USDT"
+        assert result.timestamp == 1700000000000
+        assert result.datetime_ == "2023-11-14T22:13:20.000Z"
+        assert result.high == 50000.0 * 1.05
+        assert result.low == 50000.0 * 0.95
+        assert result.bid == 49990.0
+        assert result.ask == 50010.0
+        assert result.last == 50000.0
+        assert result.base_volume == 1000.0
+        assert result.info == {"raw": "data"}
 
     @patch("src.ai_strategy.data.streams.ccxt_streamer.ccxtpro")
-    def test_normalize_ticker_handles_missing_fields(self, mock_ccxtpro):
-        """Test that _normalize_ticker handles missing fields gracefully."""
+    def test_parse_ticker_handles_missing_fields(self, mock_ccxtpro):
+        """Test that parse_ticker handles missing fields gracefully."""
         mock_ccxtpro.bitget = MagicMock()
 
         streamer = CCXTStreamer("bitget", ["BTC/USDT"])
         ticker = {"symbol": "BTC/USDT", "last": 50000.0}  # Minimal ticker
 
-        result = streamer._normalize_ticker(ticker)
+        result = streamer.parse_ticker(ticker)
 
-        assert result["symbol"] == "BTC/USDT"
-        assert result["last"] == 50000.0
-        assert result["high"] is None
-        assert result["low"] is None
-        assert result["bid"] is None
+        assert result.symbol == "BTC/USDT"
+        assert result.last == 50000.0
+        assert result.high is None
+        assert result.low is None
+        assert result.bid is None
 
 
 class TestUnsubscribe:

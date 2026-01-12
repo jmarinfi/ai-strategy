@@ -1,8 +1,8 @@
 import asyncio
 from datetime import datetime, timedelta
 
-from src.ai_strategy.data.fetchers.ccxt_fetcher import CCXTFetcher
-from src.ai_strategy.data.streams.ccxt_streamer import CCXTStreamer
+from src.ai_strategy.data import CCXTFetcher
+from src.ai_strategy.data import CCXTStreamer
 
 
 async def test_fetcher():

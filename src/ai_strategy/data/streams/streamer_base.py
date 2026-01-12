@@ -2,7 +2,10 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.ai_strategy.models import Ticker
 
 
 class BaseStreamer(ABC):
@@ -63,6 +66,21 @@ class BaseStreamer(ABC):
         """
         # Implementations should use `async def` with `yield`
         # to create an async generator
+        ...
+
+    @abstractmethod
+    def parse_ticker(self, raw_ticker: dict[str, Any]) -> "Ticker":
+        """Parse raw ticker data from the exchange into a Ticker model.
+
+        Each streamer implementation must convert its exchange-specific
+        ticker format into the standardized Ticker model.
+
+        Args:
+            raw_ticker: Raw ticker dictionary from the exchange.
+
+        Returns:
+            Ticker model with standardized fields.
+        """
         ...
 
     @abstractmethod

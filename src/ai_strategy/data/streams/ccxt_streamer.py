@@ -8,6 +8,7 @@ from typing import Any
 import ccxt.pro as ccxtpro
 
 from src.ai_strategy.data.streams.streamer_base import BaseStreamer
+from src.ai_strategy.models import Ticker
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ class CCXTStreamer(BaseStreamer):
                 # Yield each ticker individually
                 for symbol, ticker in tickers.items():
                     if symbol in self.symbols:
-                        yield self._normalize_ticker(ticker)
+                        yield ticker
 
             except Exception as e:
                 retries += 1
@@ -138,34 +139,16 @@ class CCXTStreamer(BaseStreamer):
                     pass  # Ignore errors when closing broken connection
                 await self.connect()
 
-    def _normalize_ticker(self, ticker: dict[str, Any]) -> dict[str, Any]:
-        """Normalize ticker data to a consistent format.
+    def parse_ticker(self, raw_ticker: dict[str, Any]) -> Ticker:
+        """Parse raw CCXT ticker data into a Ticker model.
 
         Args:
-            ticker: Raw ticker from ccxt.
+            raw_ticker: Raw ticker dictionary from CCXT.
 
         Returns:
-            Normalized ticker dictionary.
+            Ticker model with standardized fields.
         """
-        return {
-            "symbol": ticker.get("symbol"),
-            "timestamp": ticker.get("timestamp"),
-            "datetime": ticker.get("datetime"),
-            "high": ticker.get("high"),
-            "low": ticker.get("low"),
-            "bid": ticker.get("bid"),
-            "bidVolume": ticker.get("bidVolume"),
-            "ask": ticker.get("ask"),
-            "askVolume": ticker.get("askVolume"),
-            "open": ticker.get("open"),
-            "close": ticker.get("close"),
-            "last": ticker.get("last"),
-            "change": ticker.get("change"),
-            "percentage": ticker.get("percentage"),
-            "baseVolume": ticker.get("baseVolume"),
-            "quoteVolume": ticker.get("quoteVolume"),
-            "info": ticker.get("info"),
-        }
+        return Ticker.model_validate(raw_ticker)
 
     async def unsubscribe(self, symbols: list[str] | None = None) -> None:
         """Unsubscribe from ticker updates for specified symbols.
