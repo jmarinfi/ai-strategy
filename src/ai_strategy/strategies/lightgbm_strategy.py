@@ -104,9 +104,10 @@ class LightGBMStrategy(BaseStrategy):
         symbols: list[str],
         streamer: BaseStreamer,
         webhook_url: str,
-        bot_uuid: str,
         model_path: str | Path,
         timeframe: str,
+        long_bot_uuid: str | None = None,
+        short_bot_uuid: str | None = None,
         exchange: str = "bitget",
         prob_threshold: float = 0.52,
         historical_candles: int = 60,
@@ -117,16 +118,16 @@ class LightGBMStrategy(BaseStrategy):
             symbols: List of trading pair symbols.
             streamer: Data streamer for real-time market data.
             webhook_url: URL for sending webhooks.
-            bot_uuid: UUID of the trading bot.
+            long_bot_uuid: UUID of the LONG bot (optional, set to None if not trading longs).
+            short_bot_uuid: UUID of the SHORT bot (optional, set to None if not trading shorts).
             model_path: Path to the trained LightGBM model file.
             timeframe: Candle timeframe (e.g., '5m', '1h').
             exchange: Exchange name (default: 'bitget').
             prob_threshold: Probability threshold for generating signals (default: 0.52).
             historical_candles: Number of historical candles to fetch for indicators (default: 60).
         """
-        super().__init__(symbols, streamer, webhook_url, bot_uuid)
+        super().__init__(symbols, streamer, webhook_url, long_bot_uuid, short_bot_uuid, timeframe)
 
-        self.timeframe = timeframe
         self.exchange = exchange
         self.prob_threshold = prob_threshold
         self.historical_candles = historical_candles
@@ -147,12 +148,19 @@ class LightGBMStrategy(BaseStrategy):
         Args:
             candle: Current market candle data (OHLCV).
         """
+        from datetime import datetime
+        
         current_timestamp = candle.timestamp
+        dt_str = datetime.fromtimestamp(current_timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Log every candle update (in-progress candle)
+        print(f"📥 Candle update: {dt_str} | Close: {candle.close:.6f}", end='\r')
 
         # Detect new candle (timestamp changed)
         if current_timestamp != self._last_candle_timestamp:
             # Process the PREVIOUS candle (which is now complete)
             if self._previous_candle is not None:
+                print()  # New line after the \r updates
                 await self._process_complete_candle(self._previous_candle)
 
             # Update tracking
@@ -167,33 +175,67 @@ class LightGBMStrategy(BaseStrategy):
         Args:
             candle: Complete candle to process.
         """
+        from datetime import datetime
+        
+        dt_str = datetime.fromtimestamp(candle.timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"\n{'='*80}")
+        print(f"🕯️  PROCESSING COMPLETE CANDLE: {dt_str}")
+        print(f"{'='*80}")
+        print(f"   O: {candle.open:.6f}  H: {candle.high:.6f}")
+        print(f"   L: {candle.low:.6f}   C: {candle.close:.6f}")
+        print(f"   V: {candle.volume:.4f}")
+        
         try:
             # 1. Fetch historical candles for indicators
+            print("\n📊 Fetching historical data...")
             historical_df = await self._fetch_historical_data(candle)
 
             if historical_df is None or len(historical_df) < 50:
-                return  # Not enough data
+                print(f"   ⚠️  Not enough data ({len(historical_df) if historical_df is not None else 0} candles)")
+                return
+
+            print(f"   ✅ Fetched {len(historical_df)} historical candles")
 
             # 2. Calculate technical indicators
+            print("📈 Calculating technical indicators...")
             df_with_indicators = add_technical_indicators(historical_df)
 
             if len(df_with_indicators) == 0:
-                return  # No data after indicator calculation
+                print("   ⚠️  No data after indicator calculation")
+                return
 
             # 3. Get latest features and make prediction
+            print("🤖 Making prediction...")
             latest_features = df_with_indicators.iloc[-1]
             prediction = self.model.predict(latest_features)
+
+            print(f"\n💡 Model Prediction:")
+            print(f"   Prob DOWN: {prediction['prob_down']:.4f} ({prediction['prob_down']*100:.2f}%)")
+            print(f"   Prob UP:   {prediction['prob_up']:.4f} ({prediction['prob_up']*100:.2f}%)")
+            print(f"   Threshold: {self.prob_threshold:.4f}")
 
             # 4. Generate signal based on prediction
             signal = self.generate_signal(candle, prediction)
 
+            print(f"\n🎯 Signal Generated: {signal.signal_type}")
+            if signal.reason:
+                print(f"   Reason: {signal.reason}")
+
             # 5. Execute signal if actionable
             if signal.is_actionable:
+                print(f"   ✅ Signal is actionable, executing...")
                 await self._execute_signal(signal)
+            else:
+                print(f"   ⏸️  Signal is NOT actionable (HOLD)")
+
+            print(f"{'='*80}\n")
 
         except Exception as e:
             # Log error but don't crash the strategy
-            print(f"Error processing candle: {e}")
+            print(f"\n❌ Error processing candle: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"{'='*80}\n")
 
     async def _fetch_historical_data(self, candle: Candle) -> pd.DataFrame | None:
         """Fetch historical candles needed for indicator calculation.
@@ -285,7 +327,9 @@ class LightGBMStrategy(BaseStrategy):
             signal: Signal to execute.
         """
         if signal.signal_type == SignalType.BUY:
-            await self.open_position(signal.symbol)
+            # BUY signal = Open LONG position
+            await self.open_position(signal.symbol, position_type="long")
         elif signal.signal_type == SignalType.SELL:
-            await self.close_position(signal.symbol)
+            # SELL signal = Open SHORT position
+            await self.open_position(signal.symbol, position_type="short")
         # HOLD does nothing

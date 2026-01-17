@@ -1,810 +1,159 @@
+"""Main script for training and running LightGBM trading strategies."""
+
 import asyncio
-from datetime import datetime, timedelta
 from pathlib import Path
-import pandas as pd
 
-from src.ai_strategy.data import CCXTFetcher
+from src.ai_strategy.data import CCXTFetcher, CCXTStreamer
+from src.ai_strategy.models.sklearn.lightgbm_model import (
+    LightGBMModel,
+    add_technical_indicators,
+)
+from src.ai_strategy.models.sklearn.xgboost_model import XGBoostModel
+from src.ai_strategy.strategies import LightGBMStrategy
 
+# Configuration
 DATA_DIR = Path("data/raw")
 
-SYMBOL = "BTC/USDT"
-TIMEFRAME = "5m"
+SYMBOL = "ADA/USDT"
+TIMEFRAME = "1m"
 LIMIT_CANDLES = 100_000
 
-
-
-def parse_timeframe_to_minutes(timeframe: str) -> int:
-    """Convert timeframe string (e.g. '15m', '1h', '4h', '1d') to minutes."""
-    unit = timeframe[-1]
-    value = int(timeframe[:-1])
-    
-    if unit == 'm':
-        return value
-    elif unit == 'h':
-        return value * 60
-    elif unit == 'd':
-        return value * 24 * 60
-    elif unit == 'w':
-        return value * 24 * 60 * 7
-    else:
-        raise ValueError(f"Unsupported timeframe unit: {unit}")
-
-
-async def get_training_data(
-    symbol: str = SYMBOL,
-    timeframe: str = TIMEFRAME,
-    limit: int = LIMIT_CANDLES,
-    output_file: Path | None = None,
-) -> pd.DataFrame:
-    """
-    Get training data. If the file exists, load it.
-    Otherwise, download it from the exchange and save it.
-    """
-    if output_file is None:
-        safe_symbol = symbol.replace("/", "_").lower()
-        output_file = DATA_DIR / f"{safe_symbol}_{timeframe}.parquet"
-
-    if output_file.exists():
-        print(f"Loading data from {output_file}...")
-        return pd.read_parquet(output_file)
-
-    print(f"Data file {output_file} not found. Downloading...")
-    fetcher = CCXTFetcher("bitget", sandbox=False)
-    
-    try:
-        # Calculate start and end times based on the limit
-        end_ts = int(datetime.now().timestamp() * 1000)
-        
-        # Dynamic duration calculation
-        minutes_per_candle = parse_timeframe_to_minutes(timeframe)
-        duration_minutes = limit * minutes_per_candle
-        
-        start_ts = int((datetime.now() - timedelta(minutes=duration_minutes)).timestamp() * 1000)
-
-        print(f"Fetching {limit} candles for {symbol} ({timeframe})")
-        print(f"Range: {datetime.fromtimestamp(start_ts/1000)} -> {datetime.fromtimestamp(end_ts/1000)}")
-
-        df = await fetcher.fetch_ohlcv_range(symbol, timeframe, start_ts, end_ts)
-        
-        if df.empty:
-            raise ValueError("No data fetched from exchange.")
-
-        print(f"Downloaded {len(df)} candles.")
-        print(f"First: {pd.to_datetime(df.iloc[0]['timestamp'], unit='ms')}")
-        print(f"Last: {pd.to_datetime(df.iloc[-1]['timestamp'], unit='ms')}")
-
-        # Ensure directory exists
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        df.to_parquet(output_file)
-        print(f"Saved data to {output_file}")
-        
-        return df
-
-    finally:
-        await fetcher.close()
-
-
-import numpy as np
-
-def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add technical indicators (RSI, MACD, BB, ATR, Volume, Momentum) to the DataFrame.
-    Reference logic from: scripts/lightgbm_classifier.py
-    """
-    print("\n📊 Calculating technical indicators...")
-    
-    # Ensure sorted by timestamp
-    df = df.sort_values('timestamp').reset_index(drop=True)
-    
-    # Convert numbers to numeric just in case
-    cols = ['open', 'high', 'low', 'close', 'volume']
-    for col in cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # ===== RSI =====
-    for period in [14, 21]:
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss.replace(0, 1e-10)
-        df[f'rsi_{period}'] = 100 - (100 / (1 + rs))
-        
-    # ===== MACD =====
-    ema_12 = df['close'].ewm(span=12, adjust=False).mean()
-    ema_26 = df['close'].ewm(span=26, adjust=False).mean()
-    df['macd'] = ema_12 - ema_26
-    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-    df['macd_hist'] = df['macd'] - df['macd_signal']
-    
-    # ===== Bollinger Bands =====
-    sma_20 = df['close'].rolling(window=20).mean()
-    std_20 = df['close'].rolling(window=20).std()
-    df['bb_upper'] = sma_20 + (2 * std_20)
-    df['bb_lower'] = sma_20 - (2 * std_20)
-    df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-    
-    # ===== ATR =====
-    high_low = df['high'] - df['low']
-    high_close = np.abs(df['high'] - df['close'].shift())
-    low_close = np.abs(df['low'] - df['close'].shift())
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['atr'] = true_range.rolling(window=14).mean()
-    
-    # ===== Volume =====
-    df['volume_sma'] = df['volume'].rolling(window=20).mean()
-    df['volume_ratio'] = df['volume'] / df['volume_sma']
-    
-    # ===== Momentum =====
-    df['momentum_5'] = df['close'].pct_change(periods=5)
-    df['momentum_10'] = df['close'].pct_change(periods=10)
-    
-    # Clean up NaN values generated by rolling windows
-    before_len = len(df)
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.dropna(inplace=True)
-    print(f"✅ Indicators added. Dropped {before_len - len(df)} rows due to NaN.")
-    
-    return df
-
-
-def prepare_data_for_training(df: pd.DataFrame, horizon: int = 16, min_movement: float = 0.0):
-    """
-    Prepare data for LightGBM training:
-    1. Generate target based on future returns.
-    2. Split into Train/Test sets.
-    """
-    print("\n🎯 Preparing data for training...")
-    print(f"Horizon: {horizon} candles, Min Movement: {min_movement*100}%")
-    print(f"📊 Initial data shape: {df.shape}")
-    
-    # Make a copy to avoid modifying the original
-    df = df.copy()
-    
-    # Ensure data is sorted chronologically by timestamp
-    print("\n🔍 Ensuring chronological order...")
-    if 'timestamp' in df.columns:
-        print(f"   First timestamp before sort: {df['timestamp'].iloc[0]}")
-        print(f"   Last timestamp before sort: {df['timestamp'].iloc[-1]}")
-        df = df.sort_values('timestamp').reset_index(drop=True)
-        print(f"   ✅ Data sorted by timestamp")
-        print(f"   First timestamp after sort: {df['timestamp'].iloc[0]}")
-        print(f"   Last timestamp after sort: {df['timestamp'].iloc[-1]}")
-    else:
-        print("   ⚠️  No 'timestamp' column found, assuming data is already sorted")
-    
-    # Create Target
-    print(f"\n📈 Creating target with horizon={horizon}...")
-    print(f"   Current close (row 0): {df['close'].iloc[0]:.2f}")
-    print(f"   Current close (row 100): {df['close'].iloc[100]:.2f}")
-    
-    df['future_price'] = df['close'].shift(-horizon)
-    
-    print(f"   Future price (row 0, should be row {horizon}): {df['future_price'].iloc[0]:.2f}")
-    print(f"   Future price (row 100, should be row {100+horizon}): {df['future_price'].iloc[100]:.2f}")
-    print(f"   Last {horizon} rows will have NaN future_price")
-    
-    df['future_return'] = (df['future_price'] - df['close']) / df['close']
-    
-    print(f"   Future return (row 0): {df['future_return'].iloc[0]:.4f}")
-    print(f"   Future return (row 100): {df['future_return'].iloc[100]:.4f}")
-    
-    # Binary Target: 1 if return > min_movement, else 0
-    df['target'] = (df['future_return'] > min_movement).astype(int)
-    
-    print(f"\n📊 Target distribution (before dropping NaN):")
-    print(f"   Total rows: {len(df)}")
-    print(f"   Target=1 (UP): {(df['target'] == 1).sum()}")
-    print(f"   Target=0 (DOWN): {(df['target'] == 0).sum()}")
-    print(f"   NaN: {df['target'].isna().sum()}")
-    
-    # Drop rows with NaN targets (last 'horizon' rows)
-    before_drop = len(df)
-    df.dropna(subset=['future_return'], inplace=True)
-    after_drop = len(df)
-    
-    print(f"\n🧹 Dropped {before_drop - after_drop} rows with NaN targets")
-    print(f"   Remaining rows: {after_drop}")
-    
-    # Select features (exclude target and auxiliary columns)
-    exclude_cols = ['target', 'future_return', 'future_price', 'timestamp', 'symbol']
-    feature_cols = [c for c in df.columns if c not in exclude_cols]
-    
-    print(f"\n🔢 Feature selection:")
-    print(f"   Total columns: {len(df.columns)}")
-    print(f"   Excluded columns: {[c for c in exclude_cols if c in df.columns]}")
-    print(f"   Feature columns: {len(feature_cols)}")
-    
-    X = df[feature_cols]
-    y = df['target']
-    
-    # Time Series Split (no random shuffle)
-    split_point = int(len(df) * 0.8)
-    
-    print(f"\n✂️  Train/Test Split (80/20):")
-    print(f"   Split point: {split_point}")
-    
-    X_train = X.iloc[:split_point]
-    X_test = X.iloc[split_point:]
-    y_train = y.iloc[:split_point]
-    y_test = y.iloc[split_point:]
-    
-    print(f"\n✅ Data Split Summary:")
-    print(f"   Train: {X_train.shape} | Positive Rate: {y_train.mean():.2%} | UP={y_train.sum()} DOWN={len(y_train)-y_train.sum()}")
-    print(f"   Test:  {X_test.shape}  | Positive Rate: {y_test.mean():.2%} | UP={y_test.sum()} DOWN={len(y_test)-y_test.sum()}")
-    
-    return X_train, y_train, X_test, y_test
-
-
-import lightgbm as lgb
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.model_selection import TimeSeriesSplit
-import optuna
-
-
-def optimize_hyperparameters(X_train, y_train, n_trials=50, n_splits=3):
-    """
-    Optimize LightGBM hyperparameters using Optuna with TimeSeriesSplit.
-    
-    Args:
-        X_train: Training features
-        y_train: Training target
-        n_trials: Number of optimization trials
-        n_splits: Number of time series splits for CV
-        
-    Returns:
-        best_params: Dictionary with best hyperparameters
-    """
-    print("\n" + "="*80)
-    print("HYPERPARAMETER OPTIMIZATION WITH OPTUNA")
-    print("="*80)
-    print(f"Trials: {n_trials} | CV Splits: {n_splits}")
-    
-    def objective(trial):
-        """Objective function for Optuna."""
-        
-        # Sample hyperparameters
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 50, 300),
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-            'num_leaves': trial.suggest_int('num_leaves', 15, 127),
-            'min_child_samples': trial.suggest_int('min_child_samples', 20, 100),
-            'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 5.0),
-            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 5.0),
-            'random_state': 42,
-            'verbose': -1,
-            'n_jobs': -1
-        }
-        
-        # Time Series Cross-Validation
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-        f1_scores = []
-        
-        for train_idx, val_idx in tscv.split(X_train):
-            X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
-            y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-            
-            model = lgb.LGBMClassifier(**params)
-            model.fit(
-                X_tr, y_tr,
-                eval_set=[(X_val, y_val)],
-                eval_metric='binary_logloss',
-                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
-            )
-            
-            y_pred = model.predict(X_val)
-            f1 = f1_score(y_val, y_pred, zero_division=0)
-            f1_scores.append(f1)
-        
-        # Return mean F1 score across all folds
-        mean_f1 = sum(f1_scores) / len(f1_scores)
-        return mean_f1
-    
-    # Create study and optimize
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study = optuna.create_study(direction='maximize')
-    
-    print("\n🔍 Starting optimization...")
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
-    
-    # Results
-    print("\n" + "="*80)
-    print("OPTIMIZATION RESULTS")
-    print("="*80)
-    print(f"✅ Best F1 Score: {study.best_value:.4f}")
-    print(f"\n📋 Best Hyperparameters:")
-    for key, value in study.best_params.items():
-        print(f"   {key:20s}: {value}")
-    print("="*80)
-    
-    return study.best_params
-
-
-def train_lightgbm_model(X_train, y_train, X_test, y_test, params=None, optimize=False, n_trials=50):
-    """
-    Train a LightGBM classifier for binary prediction.
-    
-    Args:
-        X_train, y_train: Training data
-        X_test, y_test: Test data
-        params: Custom hyperparameters (if None, uses defaults)
-        optimize: If True, run Optuna optimization
-        n_trials: Number of trials for optimization
-    
-    Returns:
-        model: Trained LightGBM model
-        y_pred: Binary predictions on test set
-        y_proba: Probability predictions on test set
-    """
-    print("\n" + "="*80)
-    print("TRAINING LIGHTGBM CLASSIFIER")
-    print("="*80)
-    
-    print(f"\n📊 Training data:")
-    print(f"   Features: {X_train.shape[1]}")
-    print(f"   Train samples: {len(X_train):,}")
-    print(f"   Test samples: {len(X_test):,}")
-    
-    # Hyperparameter optimization if requested
-    if optimize:
-        print("\n🔧 Running hyperparameter optimization...")
-        params = optimize_hyperparameters(X_train, y_train, n_trials=n_trials)
-    elif params is None:
-        # Default parameters
-        params = {
-            'n_estimators': 200,
-            'max_depth': 7,
-            'learning_rate': 0.05,
-            'num_leaves': 31,
-            'min_child_samples': 50,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 1.0,
-            'reg_lambda': 1.0,
-            'random_state': 42,
-            'verbose': -1,
-            'n_jobs': -1
-        }
-        print("\n🔧 Using default hyperparameters")
-    else:
-        print("\n🔧 Using custom hyperparameters")
-    
-    print(f"\n📋 Model Configuration:")
-    for key, value in params.items():
-        if key not in ['random_state', 'verbose', 'n_jobs']:
-            print(f"   {key:20s}: {value}")
-    
-    # Model configuration
-    model = lgb.LGBMClassifier(**params)
-    
-    print("\n🚀 Training started...")
-    
-    # Train with early stopping
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
-        eval_metric='binary_logloss',
-        callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
-    )
-    
-    print(f"✅ Training completed!")
-    print(f"   Best iteration: {model.best_iteration_}")
-    
-    # Predictions
-    print("\n📈 Generating predictions...")
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]  # Probability of class 1 (UP)
-    
-    # Metrics
-    print("\n" + "="*80)
-    print("CLASSIFICATION METRICS")
-    print("="*80)
-    
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, zero_division=0)
-    recall = recall_score(y_test, y_pred, zero_division=0)
-    f1 = f1_score(y_test, y_pred, zero_division=0)
-    
-    print(f"Accuracy:  {accuracy:.4f}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall:    {recall:.4f}")
-    print(f"F1-Score:  {f1:.4f}")
-    
-    print("\n📊 Prediction Distribution:")
-    print(f"   Predicted UP:   {(y_pred == 1).sum():,} ({(y_pred == 1).mean():.2%})")
-    print(f"   Predicted DOWN: {(y_pred == 0).sum():,} ({(y_pred == 0).mean():.2%})")
-    
-    print("\n📊 Probability Statistics:")
-    print(f"   Mean: {y_proba.mean():.4f}")
-    print(f"   Std:  {y_proba.std():.4f}")
-    print(f"   Min:  {y_proba.min():.4f}")
-    print(f"   Max:  {y_proba.max():.4f}")
-    
-    print("="*80)
-    
-    return model, y_pred, y_proba
-
-
-import joblib
-from datetime import datetime as dt
-
-
-def save_model(model, feature_cols, metrics, config, output_path="models/lightgbm_model.pkl"):
-    """
-    Save the trained model with metadata.
-    
-    Args:
-        model: Trained LightGBM model
-        feature_cols: List of feature column names
-        metrics: Dictionary with performance metrics
-        config: Dictionary with configuration (horizon, min_movement, etc.)
-        output_path: Path to save the model
-    """
-    from pathlib import Path
-    
-    print("\n" + "="*80)
-    print("SAVING MODEL")
-    print("="*80)
-    
-    # Prepare model package
-    model_data = {
-        'model': model,
-        'feature_cols': feature_cols,
-        'metrics': metrics,
-        'config': config,
-        'timestamp': dt.now().isoformat(),
-        'n_features': len(feature_cols)
-    }
-    
-    # Ensure directory exists
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Save
-    joblib.dump(model_data, output_file)
-    
-    print(f"✅ Model saved to: {output_file}")
-    print(f"\n📦 Model Package Contents:")
-    print(f"   Model type: {type(model).__name__}")
-    print(f"   Features: {len(feature_cols)}")
-    print(f"   Timestamp: {model_data['timestamp']}")
-    print(f"\n📊 Saved Metrics:")
-    for key, value in metrics.items():
-        print(f"   {key}: {value:.4f}" if isinstance(value, float) else f"   {key}: {value}")
-    print(f"\n⚙️  Configuration:")
-    for key, value in config.items():
-        print(f"   {key}: {value}")
-    print("="*80)
-    
-import httpx
-import numpy as np
-
-
-# Configuration for webhooks
+# Webhook configuration
 WEBHOOK_URL = "http://192.168.1.132:7503/trade_signal"
-LONG_BOT_UUID = "f830bcb3-4b14-4ef2-8e81-a35a5af5b73c"
-SHORT_BOT_UUID = "5d6d7832-c119-494f-b441-aa1d9df8ea2b"
-PROB_THRESHOLD = 0.52  # Umbral de probabilidad para abrir posición
+LONG_BOT_UUID = "75ec9a0c-f525-4560-a2e7-ccd4a6915093"  # UUID for LONG positions
+SHORT_BOT_UUID = None                                   # UUID for SHORT positions
 
+# Configuration
+HORIZON = 30
+MIN_MOVEMENT = 0.0
+OPTIMIZE = True
+N_TRIALS = 30
+PROB_THRESHOLD = 0.51
 
-async def send_webhook(action: str, uuid: str, signal_type: str) -> bool:
-    """
-    Send webhook signal to trading bot.
-    
-    Args:
-        action: Action to perform (e.g., 'startDeal')
-        uuid: Bot UUID (LONG or SHORT)
-        signal_type: 'LONG' or 'SHORT' for logging
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    payload = {
-        "action": action,
-        "uuid": uuid
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(WEBHOOK_URL, json=payload)
-            
-            if response.status_code == 200:
-                print(f"   ✅ {signal_type} signal sent successfully")
-                return True
-            else:
-                print(f"   ❌ {signal_type} signal failed: HTTP {response.status_code}")
-                return False
-                
-    except Exception as e:
-        print(f"   ❌ {signal_type} webhook error: {e}")
-        return False
-
-
-async def on_new_candle(candle: list, model, feature_cols: list, config: dict) -> None:
-    """
-    Process a new candle and make trading decisions.
-    
-    Args:
-        candle: OHLCV data [timestamp, open, high, low, close, volume]
-        model: Trained LightGBM model
-        feature_cols: List of feature column names expected by the model
-        config: Configuration dict with strategy parameters
-    """
-    timestamp, open_price, high, low, close, volume = candle
-    
-    # Convert timestamp to readable format
-    from datetime import datetime as dt
-    dt_str = dt.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
-    
-    print(f"\n{'='*80}")
-    print(f"📊 NEW CANDLE: {dt_str}")
-    print(f"{'='*80}")
-    print(f"   O: {open_price:>12.2f}  H: {high:>12.2f}")
-    print(f"   L: {low:>12.2f}  C: {close:>12.2f}")
-    print(f"   V: {volume:>12.4f}")
-    
-    try:
-        # 1. Fetch historical candles needed for indicators
-        print("\n🔄 Fetching historical data for indicators...")
-        
-        symbol = config['symbol']
-        timeframe = config['timeframe']
-        
-        # Need at least 50 candles for indicators (longest period we use)
-        fetcher = CCXTFetcher("bitget", sandbox=False)
-        
-        end_ts = timestamp
-        start_ts = timestamp - (60 * 1000 * parse_timeframe_to_minutes(timeframe) * 60)  # 60 candles back
-        
-        historical_df = await fetcher.fetch_ohlcv_range(symbol, timeframe, start_ts, end_ts)
-        await fetcher.close()
-        
-        if len(historical_df) < 50:
-            print(f"   ⚠️  Not enough historical data ({len(historical_df)} candles), skipping...")
-            print("="*80)
-            return
-        
-        print(f"   ✅ Fetched {len(historical_df)} historical candles")
-        
-        # 2. Calculate technical indicators
-        print("📈 Calculating technical indicators...")
-        df_with_indicators = add_technical_indicators(historical_df)
-        
-        # Get the last row (most recent complete data)
-        if len(df_with_indicators) == 0:
-            print("   ⚠️  No data after indicator calculation, skipping...")
-            print("="*80)
-            return
-            
-        latest_features = df_with_indicators.iloc[-1]
-        
-        # 3. Prepare features in correct order
-        print("🔧 Preparing features for model...")
-        
-        # Extract features in the same order as training
-        feature_values = []
-        for col in feature_cols:
-            if col in latest_features.index:
-                feature_values.append(latest_features[col])
-            else:
-                print(f"   ⚠️  Missing feature: {col}, using 0")
-                feature_values.append(0.0)
-        
-        # Create DataFrame with proper feature names (avoid sklearn warning)
-        X = pd.DataFrame([feature_values], columns=feature_cols)
-        
-        # 4. Get model prediction
-        print("🤖 Getting model prediction...")
-        
-        y_proba = model.predict_proba(X)[0]  # [prob_down, prob_up]
-        prob_down = y_proba[0]
-        prob_up = y_proba[1]
-        
-        print(f"\n📊 Prediction:")
-        print(f"   Prob DOWN: {prob_down:.4f} ({prob_down*100:.2f}%)")
-        print(f"   Prob UP:   {prob_up:.4f} ({prob_up*100:.2f}%)")
-        
-        # 5. Make trading decision
-        print(f"\n💡 Decision (threshold: {PROB_THRESHOLD:.2f}):")
-        
-        if prob_up > PROB_THRESHOLD:
-            print(f"   🟢 LONG signal! (prob_up={prob_up:.4f} > {PROB_THRESHOLD})")
-            await send_webhook("startDeal", LONG_BOT_UUID, "LONG")
-            
-        elif prob_down > PROB_THRESHOLD:
-            print(f"   🔴 SHORT signal! (prob_down={prob_down:.4f} > {PROB_THRESHOLD})")
-            await send_webhook("startDeal", SHORT_BOT_UUID, "SHORT")
-            
-        else:
-            print(f"   ⏸️  No signal (both below threshold)")
-        
-    except Exception as e:
-        print(f"\n❌ Error processing candle: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print("="*80)
-
-
-from src.ai_strategy.data import CCXTStreamer
-
-
-async def run_live_strategy(model_path: str, symbol: str, timeframe: str) -> None:
-    """
-    Run the trading strategy in live mode using websocket candle streams.
-    
-    Args:
-        model_path: Path to the saved model file
-        symbol: Trading pair symbol (e.g., 'BTC/USDT')
-        timeframe: Candle timeframe (e.g., '5m')
-    """
-    print("\n" + "="*80)
-    print("STARTING LIVE STRATEGY")
-    print("="*80)
-    
-    # Load model
-    print(f"\n📦 Loading model from: {model_path}")
-    model_data = joblib.load(model_path)
-    
-    model = model_data['model']
-    feature_cols = model_data['feature_cols']
-    config = model_data['config']
-    metrics = model_data['metrics']
-    
-    print(f"✅ Model loaded successfully")
-    print(f"\n📊 Model Info:")
-    print(f"   Symbol: {config['symbol']}")
-    print(f"   Timeframe: {config['timeframe']}")
-    print(f"   Horizon: {config['horizon']} candles")
-    print(f"   Features: {len(feature_cols)}")
-    print(f"   F1 Score: {metrics['f1_score']:.4f}")
-    print(f"   Accuracy: {metrics['accuracy']:.4f}")
-    
-    # Connect to websocket
-    print(f"\n🔌 Connecting to {symbol} {timeframe} candle stream...")
-    
-    async with CCXTStreamer("bitget", [symbol]) as streamer:
-        print(f"✅ Connected to Bitget WebSocket")
-        print(f"👂 Listening for {symbol} {timeframe} candles...")
-        print(f"   Press Ctrl+C to stop\n")
-        
-        try:
-            candle_count = 0
-            last_candle_timestamp = None
-            previous_candle = None  # Store the previous candle
-            
-            async for candle in streamer.watch_ohlcv(symbol, timeframe):
-                current_timestamp = candle[0]
-                
-                # Detect new candle (timestamp changed)
-                if current_timestamp != last_candle_timestamp:
-                    # Process the PREVIOUS candle (which is now complete)
-                    if previous_candle is not None:
-                        candle_count += 1
-                        await on_new_candle(previous_candle, model, feature_cols, config)
-                    
-                    # Update tracking
-                    last_candle_timestamp = current_timestamp
-                
-                # Always update previous_candle with the latest data
-                previous_candle = candle
-                
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            print(f"\n\n⚠️  Received interrupt signal. Stopping...")
-        except Exception as e:
-
-            print(f"\n❌ Error in live strategy: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            print(f"\n🛑 Unsubscribing from {symbol} {timeframe}...")
-            await streamer.un_watch_ohlcv(symbol, timeframe)
-            print("✅ Disconnected cleanly")
-    
-    print("\n" + "="*80)
-    print("LIVE STRATEGY STOPPED")
-    print("="*80)
+# MODE: 'train' or 'live'
+MODE = "live"  # Change to 'live' to run the live strategy
 
 
 async def main():
+    """Main entry point for the application."""
     try:
-        # Configuration
-        HORIZON = 6
-        MIN_MOVEMENT = 0.0
-        OPTIMIZE = True
-        N_TRIALS = 30
         
-        # MODE: 'train' or 'live'
-        MODE = 'live'  # Change to 'live' to run the live strategy
-        
-        if MODE == 'train':
-            print("🎓 MODE: TRAINING")
-            
-            # 1. Get Data
-            df = await get_training_data()
-            
-            # 2. Prepare Data (Add Indicators)
+
+        if MODE == "train":
+            print("🎓 MODE: TRAINING\n")
+
+            # 1. Get training data
+            fetcher = CCXTFetcher("bitget", sandbox=False)
+            try:
+                df = await fetcher.get_training_data(
+                    symbol=SYMBOL,
+                    timeframe=TIMEFRAME,
+                    limit=LIMIT_CANDLES,
+                    output_dir=DATA_DIR,
+                )
+            finally:
+                await fetcher.close()
+
+            # 2. Add technical indicators
             df = add_technical_indicators(df)
-            
-            # 3. Prepare for Training (Target & Split)
-            X_train, y_train, X_test, y_test = prepare_data_for_training(
-                df, 
-                horizon=HORIZON, 
-                min_movement=MIN_MOVEMENT
+
+            # 3. Create and train model
+            model = LightGBMModel()
+
+            # Prepare data for training
+            X_train, y_train, X_test, y_test = model.prepare_data_for_training(
+                df, horizon=HORIZON, min_movement=MIN_MOVEMENT
             )
-            
-            # Store feature columns
-            feature_cols = X_train.columns.tolist()
-            
-            # 4. Train Model (with or without optimization)
-            model, y_pred, y_proba = train_lightgbm_model(
-                X_train, y_train, X_test, y_test,
+
+            # Train model
+            model.train(
+                X_train,
+                y_train,
+                X_test,
+                y_test,
                 optimize=OPTIMIZE,
-                n_trials=N_TRIALS
+                n_trials=N_TRIALS,
             )
-            
-            # 5. Prepare metrics for saving
-            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-            
-            metrics = {
-                'accuracy': accuracy_score(y_test, y_pred),
-                'precision': precision_score(y_test, y_pred, zero_division=0),
-                'recall': recall_score(y_test, y_pred, zero_division=0),
-                'f1_score': f1_score(y_test, y_pred, zero_division=0),
-                'n_test_samples': len(y_test),
-                'predicted_up_pct': (y_pred == 1).mean()
-            }
-            
-            # 6. Prepare configuration
+
+            # 4. Save model with configuration
             config = {
-                'symbol': SYMBOL,
-                'timeframe': TIMEFRAME,
-                'horizon': HORIZON,
-                'min_movement': MIN_MOVEMENT,
-                'optimized': OPTIMIZE,
-                'n_trials': N_TRIALS if OPTIMIZE else None,
-                'train_samples': len(X_train),
-                'test_samples': len(X_test)
+                "symbol": SYMBOL,
+                "timeframe": TIMEFRAME,
+                "horizon": HORIZON,
+                "min_movement": MIN_MOVEMENT,
+                "optimized": OPTIMIZE,
+                "n_trials": N_TRIALS if OPTIMIZE else None,
+                "train_samples": len(X_train),
+                "test_samples": len(X_test),
             }
-            
-            # 7. Save model
-            model_path = save_model(
-                model=model,
-                feature_cols=feature_cols,
-                metrics=metrics,
-                config=config,
-                output_path=f"models/lightgbm_{SYMBOL.replace('/', '_').lower()}_{TIMEFRAME}_h{HORIZON}.pkl"
-            )
-            
+
+            output_path = f"models/lightgbm_{SYMBOL.replace('/', '_').lower()}_{TIMEFRAME}_h{HORIZON}.pkl"
+            model.save(output_path, config=config)
+
             print("\n✅ Training completed successfully!")
             print(f"📦 Model saved and ready for predictions")
-            
-        elif MODE == 'live':
-            print("🚀 MODE: LIVE TRADING")
-            
-            # Construct model path from config
+
+        elif MODE == "live":
+            print("� MODE: LIVE TRADING\n")
+
+            # Construct model path
             model_path = f"models/lightgbm_{SYMBOL.replace('/', '_').lower()}_{TIMEFRAME}_h{HORIZON}.pkl"
-            
+
             # Check if model exists
             if not Path(model_path).exists():
                 raise FileNotFoundError(
                     f"Model not found at {model_path}. "
                     f"Please train the model first by setting MODE='train'"
                 )
-            
-            # Run live strategy
-            await run_live_strategy(model_path, SYMBOL, TIMEFRAME)
-            
+
+            # Create streamer
+            async with CCXTStreamer("bitget", [SYMBOL]) as streamer:
+                # Create strategy
+                strategy = LightGBMStrategy(
+                    symbols=[SYMBOL],
+                    streamer=streamer,
+                    webhook_url=WEBHOOK_URL,
+                    model_path=model_path,
+                    timeframe=TIMEFRAME,
+                    long_bot_uuid=LONG_BOT_UUID,
+                    short_bot_uuid=SHORT_BOT_UUID,
+                    exchange="bitget",
+                    prob_threshold=PROB_THRESHOLD,
+                    historical_candles=60,
+                )
+
+                print(f"🚀 Starting LightGBM strategy...")
+                print(f"   Model: {model_path}")
+                print(f"   Symbol: {SYMBOL}")
+                print(f"   Timeframe: {TIMEFRAME}")
+                print(f"   Threshold: {PROB_THRESHOLD}")
+                print(f"   Features: {strategy.model.num_features}")
+                print(f"\n👂 Listening for candles...")
+                print("   Press Ctrl+C to stop\n")
+
+                try:
+                    # Run the strategy
+                    await strategy.run()
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    print("\n⚠️  Received interrupt signal. Stopping...")
+                except Exception as e:
+                    print(f"\n❌ Error: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                finally:
+                    await strategy.stop()
+                    print("✅ Strategy stopped cleanly")
+
         else:
             raise ValueError(f"Invalid MODE: {MODE}. Must be 'train' or 'live'")
-        
+
     except Exception as e:
         print(f"❌ An error occurred: {e}")
         import traceback
+
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
