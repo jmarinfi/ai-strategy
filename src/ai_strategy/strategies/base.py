@@ -2,10 +2,10 @@ from abc import ABC, abstractmethod
 
 from src.ai_strategy.data import BaseStreamer
 from src.ai_strategy.models import (
+    Candle,
     CloseDealWebhook,
     Signal,
     StartDealWebhook,
-    Ticker,
     WebhookRequest,
 )
 
@@ -26,24 +26,24 @@ class BaseStrategy(ABC):
         self._running: bool = False
 
     @abstractmethod
-    async def on_tick(self, ticker: Ticker) -> None:
-        """Process a new price tick from the market.
+    async def on_candle(self, candle: Candle) -> None:
+        """Process a new candlestick from the market.
 
-        Called each time a new ticker update is received from the streamer.
-        Implementations should analyze the ticker and potentially generate
+        Called each time a new candle is received from the streamer.
+        Implementations should analyze the candle and potentially generate
         signals or update internal state.
 
         Args:
-            ticker: Current market ticker data.
+            candle: Current market candle data (OHLCV).
         """
         ...
 
     @abstractmethod
-    def generate_signal(self, ticker: Ticker) -> Signal:
-        """Generate a trading signal based on the ticker data.
+    def generate_signal(self, candle: Candle) -> Signal:
+        """Generate a trading signal based on the candle data.
 
         Args:
-            ticker: Current market ticker data.
+            candle: Current market candle data (OHLCV).
 
         Returns:
             Signal indicating whether to buy, sell, or hold.
@@ -51,19 +51,19 @@ class BaseStrategy(ABC):
         ...
 
     async def run(self) -> None:
-        """Main loop that processes tickers and generates signals.
+        """Main loop that processes candles and generates signals.
 
         Starts the strategy by connecting to the streamer and processing
-        each ticker update through on_tick. Runs until stop() is called.
+        each candle through on_candle. Runs until stop() is called.
         """
         self._running = True
 
-        async for ticker_data in self.streamer.watch_tickers():
+        async for candle_data in self.streamer.watch_ohlcv():
             if not self._running:
                 break
 
-            ticker = self.streamer.parse_ticker(ticker_data)
-            await self.on_tick(ticker)
+            candle = self.streamer.parse_candle(candle_data)
+            await self.on_candle(candle)
 
     async def stop(self) -> None:
         """Stop the strategy gracefully.
@@ -114,11 +114,34 @@ class BaseStrategy(ABC):
         )
         await self.send_webhook(webhook)
 
-    @abstractmethod
-    async def send_webhook(self, webhook: WebhookRequest) -> None:
+    async def send_webhook(self, webhook: WebhookRequest) -> bool:
         """Send a webhook to the trading bot.
 
         Args:
             webhook: Webhook request model to send.
+
+        Returns:
+            True if successful, False otherwise.
         """
-        ...
+        import httpx
+
+        payload = {
+            "action": webhook.action,
+            "uuid": webhook.uuid,
+        }
+
+        # Add symbol if present (for StartDealWebhook and CloseDealWebhook)
+        if hasattr(webhook, "symbol"):
+            payload["symbol"] = webhook.symbol
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(self.webhook_url, json=payload)
+
+                if response.status_code == 200:
+                    return True
+                else:
+                    return False
+
+        except Exception:
+            return False
