@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from enum import Enum
 
 from src.ai_strategy.data import BaseStreamer
 from src.ai_strategy.models import (
@@ -12,14 +11,12 @@ from src.ai_strategy.models import (
 
 
 class BaseStrategy(ABC):
-
     def __init__(
         self,
         symbols: list[str],
         streamer: BaseStreamer,
         webhook_url: str,
-        bot_uuid: str
-
+        bot_uuid: str,
     ) -> None:
         self.symbols = symbols
         self.streamer = streamer
