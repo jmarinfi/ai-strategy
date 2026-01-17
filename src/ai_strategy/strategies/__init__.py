@@ -2,8 +2,10 @@
 
 from src.ai_strategy.strategies.base import BaseStrategy
 from src.ai_strategy.strategies.lightgbm_strategy import LightGBMStrategy
+from src.ai_strategy.strategies.random_forest_strategy import RandomForestStrategy
 
 __all__ = [
     "BaseStrategy",
     "LightGBMStrategy",
+    "RandomForestStrategy",
 ]
