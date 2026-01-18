@@ -27,7 +27,7 @@ SHORT_BOT_UUID = "3bfa7130-5bc9-410e-ab3e-5f19152dec39"  # UUID for SHORT positi
 N_LAGS = 48  # How many previous time steps to use as features (sliding window size)
 
 # MODE: 'train' or 'live' or 'backtest'
-MODE = "backtest"
+MODE = "live"
 
 
 async def main():
