@@ -15,10 +15,12 @@ from sklearn.metrics import (
 )
 from sklearn.ensemble import RandomForestRegressor
 
+from ...models.base import BaseModel
+
 warnings.filterwarnings("ignore")
 
 
-class RandomForest:
+class RandomForest(BaseModel):
     def __init__(self, model_path: str | Path | None = None):
         self.model_path = Path(model_path) if model_path else None
         self.model: Any | None = None
@@ -32,7 +34,7 @@ class RandomForest:
             print(f"✅ Model loaded from {self.model_path}")
 
     def prepare_data_for_training(
-        self, df: pd.DataFrame, n_lags: int = 6, test_size: float = 0.2
+        self, df: pd.DataFrame, n_lags: int = 6, test_size: float = 0.2, **kwargs: Any
     ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """Prepare data for training using sliding window approach (Machine Learning Mastery method).
 
@@ -133,21 +135,21 @@ class RandomForest:
         self.config = model_data.get("config", {})
         self.metrics = model_data.get("metrics", {})
 
-    def train(self, x_train, y_train, x_test, y_test):
+    def train(self, X_train, y_train, X_test, y_test, **kwargs):
         print("\n🔧 Training Random Forest model...")
 
         # Initialize and train the model
         regressor = RandomForestRegressor(
             n_estimators=100, random_state=42, oob_score=True, verbose=2
         )
-        regressor.fit(x_train, y_train)
+        regressor.fit(X_train, y_train)
 
         # Save the trained model
         self.model = regressor
 
         # Make predictions
-        y_train_pred = regressor.predict(x_train)
-        y_test_pred = regressor.predict(x_test)
+        y_train_pred = regressor.predict(X_train)
+        y_test_pred = regressor.predict(X_test)
 
         # Calculate metrics
         train_mae = mean_absolute_error(y_train, y_train_pred)
@@ -232,7 +234,9 @@ class RandomForest:
         joblib.dump(model_data, output_file)
         self.model_path = output_file
 
-    def predict(self, df: pd.DataFrame, n_lags: int | None = None) -> float:
+    def predict(
+        self, df: pd.DataFrame, n_lags: int | None = None, **kwargs: Any
+    ) -> float:
         """Make a prediction for the next close price.
 
         Args:

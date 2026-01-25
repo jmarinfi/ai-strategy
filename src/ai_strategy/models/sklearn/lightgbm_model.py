@@ -12,8 +12,10 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import TimeSeriesSplit
 
+from ...models.base import BaseModel
 
-class LightGBMModel:
+
+class LightGBMModel(BaseModel):
     """Wrapper for LightGBM model with training, prediction, and data processing capabilities."""
 
     def __init__(self, model_path: str | Path | None = None) -> None:
@@ -32,7 +34,11 @@ class LightGBMModel:
             self.load()
 
     def prepare_data_for_training(
-        self, df: pd.DataFrame, horizon: int = 16, min_movement: float = 0.0
+        self,
+        df: pd.DataFrame,
+        horizon: int = 16,
+        min_movement: float = 0.0,
+        **kwargs: Any,
     ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """Prepare data for LightGBM training.
 
@@ -228,6 +234,7 @@ class LightGBMModel:
         params: dict[str, Any] | None = None,
         optimize: bool = False,
         n_trials: int = 50,
+        **kwargs: Any,
     ) -> tuple[Any, np.ndarray, np.ndarray]:
         """Train a LightGBM classifier for binary prediction.
 
@@ -466,7 +473,7 @@ class LightGBMModel:
             "prob_up": float(y_proba[1]),
         }
 
-    def predict(self, features: pd.Series) -> dict[str, float]:
+    def predict(self, features: pd.Series, **kwargs: Any) -> dict[str, float]:
         """End-to-end prediction from raw features.
 
         This method combines feature preparation and prediction.

@@ -4,10 +4,11 @@ import asyncio
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 from backtesting import Backtest
 
 from src.ai_strategy.data import CCXTFetcher, CCXTStreamer, Preprocessor
-from src.ai_strategy.models.sklearn.random_forest_model import RandomForest
+from src.ai_strategy.models.mlm.random_forest_model import RandomForestMLM
 from src.ai_strategy.strategies import RandomForestStrategy
 from src.ai_strategy.backtesting import RandomForestStrategyBacktest
 
@@ -15,7 +16,7 @@ from src.ai_strategy.backtesting import RandomForestStrategyBacktest
 DATA_DIR = Path("data/raw")
 
 SYMBOL = "ADA/USDT"
-TIMEFRAME = "5m"
+TIMEFRAME = "15m"
 LIMIT_CANDLES = 100_000
 
 # Webhook configuration
@@ -24,10 +25,10 @@ LONG_BOT_UUID = "d56aef35-8fb1-4cdf-b8c8-2d7f0cca2005"  # UUID for LONG position
 SHORT_BOT_UUID = "3bfa7130-5bc9-410e-ab3e-5f19152dec39"  # UUID for SHORT positions
 
 # Random Forest Configuration (Machine Learning Mastery method)
-N_LAGS = 48  # How many previous time steps to use as features (sliding window size)
+N_LAGS = 96  # How many previous time steps to use as features (sliding window size)
 
 # MODE: 'train' or 'live' or 'backtest'
-MODE = "live"
+MODE = "train"
 
 
 async def main():
@@ -49,43 +50,49 @@ async def main():
                 await fetcher.close()
 
             # 2. Add technical indicators
+            print(f"\n🧪 Adding technical indicators to {len(df)} candles...")
             df = Preprocessor.add_technical_indicators(df)
-            print(df.head())
+            print(f"✅ Indicators added. New shape: {df.shape}")
 
             # 3. Create and train model
-            model = RandomForest()
-
-            # Prepare data for training with sliding window (ML Mastery method)
+            print("\n🧠 Initializing RandomForestMLM...")
+            model = RandomForestMLM(
+                df, n_lags_in=N_LAGS, n_lags_out=1, name_targets=["close"]
+            )
             X_train, y_train, X_test, y_test = model.prepare_data_for_training(
-                df,
-                n_lags=N_LAGS,  # Sliding window size (predict next value)
+                train_size=0.95
             )
 
-            # Train model
-            model.train(
+            # # Train model
+            # model.train(
+            #     X_train,
+            #     y_train,
+            #     X_test,
+            #     y_test,
+            # )
+
+            output_path = f"models/random_forest_{SYMBOL.replace('/', '_').lower()}_{TIMEFRAME}_lags{N_LAGS}.pkl"
+            model.walk_forward_validation(
                 X_train,
                 y_train,
                 X_test,
                 y_test,
+                block_size=96,
+                results_path="results/random_forest_walk_forward_validation.csv",
+                output_path=output_path,
             )
 
-            # 4. Save model with configuration
-            config = {
-                "symbol": SYMBOL,
-                "timeframe": TIMEFRAME,
-                "n_lags": N_LAGS,
-                "train_samples": len(X_train),
-                "test_samples": len(X_test),
-            }
+            # Re-entrenar con todos los datos para producción
+            print("\n🔄 Re-training model with FULL dataset for production...")
+            X_full = np.concatenate((X_train, X_test))
+            y_full = np.concatenate((y_train, y_test))
+            model.model.fit(X_full, y_full)
+            print("✅ Production model trained successfully")
 
-            output_path = f"models/random_forest_{SYMBOL.replace('/', '_').lower()}_{TIMEFRAME}_lags{N_LAGS}.pkl"
-            model.save(output_path, config=config)
-
-            print("\n✅ Training completed successfully!")
-            print("📦 Model saved and ready for predictions")
+            model.save(output_path)
 
         elif MODE == "live":
-            print("� MODE: LIVE TRADING\n")
+            print("🚀 MODE: LIVE TRADING\n")
 
             # Construct model path
             model_path = f"models/random_forest_{SYMBOL.replace('/', '_').lower()}_{TIMEFRAME}_lags{N_LAGS}.pkl"
