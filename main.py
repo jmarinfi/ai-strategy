@@ -2,10 +2,11 @@
 
 import asyncio
 from pathlib import Path
+from datetime import datetime
 
 import pandas as pd
-import numpy as np
 from backtesting import Backtest
+import numpy as np
 
 from src.ai_strategy.data import CCXTFetcher, CCXTStreamer, Preprocessor
 from src.ai_strategy.models.mlm.random_forest_model import RandomForestMLM
@@ -26,9 +27,10 @@ SHORT_BOT_UUID = "3bfa7130-5bc9-410e-ab3e-5f19152dec39"  # UUID for SHORT positi
 
 # Random Forest Configuration (Machine Learning Mastery method)
 N_LAGS = 96  # How many previous time steps to use as features (sliding window size)
+PREDICTION_HORIZON = 16  # How many time steps to predict into the future
 
 # MODE: 'train' or 'live' or 'backtest'
-MODE = "train"
+MODE = "live"
 
 
 async def main():
@@ -57,7 +59,11 @@ async def main():
             # 3. Create and train model
             print("\n🧠 Initializing RandomForestMLM...")
             model = RandomForestMLM(
-                df, n_lags_in=N_LAGS, n_lags_out=1, name_targets=["close"]
+                df,
+                n_lags_in=N_LAGS,
+                n_lags_out=1,
+                prediction_horizon=PREDICTION_HORIZON,
+                name_targets=["close"],
             )
             X_train, y_train, X_test, y_test = model.prepare_data_for_training(
                 train_size=0.95
@@ -117,8 +123,8 @@ async def main():
                     long_bot_uuid=LONG_BOT_UUID,
                     short_bot_uuid=SHORT_BOT_UUID,
                     exchange="bitget",
-                    price_threshold=0.001,
-                    historical_candles=120,  # Enough for indicators (~52) + N_LAGS (48) + margin
+                    price_threshold=0.024783739559276756,
+                    historical_candles=150,  # Enough for indicators (~52) + N_LAGS (96) + margin
                 )
 
                 print("🚀 Starting Random Forest strategy...")
@@ -126,7 +132,7 @@ async def main():
                 print(f"   Symbol: {SYMBOL}")
                 print(f"   Timeframe: {TIMEFRAME}")
                 print(f"   N_Lags: {N_LAGS}")
-                print("   Price Threshold: ±0.1%")
+                print(f"   Price Threshold: {strategy.price_threshold * 100}%")
                 print("\n👂 Listening for candles...")
                 print("   Press Ctrl+C to stop\n")
 
@@ -145,9 +151,14 @@ async def main():
                     print("✅ Strategy stopped cleanly")
 
         elif MODE == "backtest":
-            print(" MODE: BACKTESTING\n")
+            print("🚀 MODE: BACKTESTING\n")
 
-            data = pd.read_parquet("data/raw/ada_usdt_5m.parquet")
+            data = pd.read_parquet("data/raw/ada_usdt_15m.parquet")
+            # Filter data from 2025-03-10 to final
+            data = data[data["timestamp"] >= datetime(2025, 3, 10).timestamp() * 1000]
+            print(f"Enncabezado de datos para backtesting:\n{data.head()}")
+            print(f"Columna de datos para backtesting:\n{data.columns}")
+            print(f"Cantidad de datos para backtesting: {len(data)}")
 
             # Rename columns to backtesting.py format (capitalized)
             data = data.rename(
@@ -163,6 +174,8 @@ async def main():
             # Convert timestamp (ms) to datetime and set as index
             data.index = pd.to_datetime(data["timestamp"], unit="ms")
             data = data.drop(columns=["timestamp"])
+            print(f"Datos para backtesting:\n{data.head()}")
+            print(f"Datos para backtesting:\n{data.tail()}")
 
             bt_random_forest = Backtest(
                 data=data,
@@ -172,14 +185,24 @@ async def main():
             )
             stats = bt_random_forest.run()
             print(stats)
+            bt_random_forest.plot()
 
             stats = bt_random_forest.optimize(
-                price_pct_threshold=[0.0005, 0.001, 0.002, 0.004],
-                n_candles_stop=range(1, 10, 2),
-                take_profit_pct=[0.002, 0.003, 0.004, 0.005],
-                stop_loss_pct=[-0.001, -0.002, -0.003, -0.004],
+                method="sambo",
+                max_tries=25,
+                price_pct_threshold=[0.01, 0.015, 0.02, 0.025, 0.03],
+                minutes_stop=range(4 * 60, 5 * 60, 15),
+                take_profit_pct=[0.005, 0.0075, 0.01, 0.0125, 0.015],
+                stop_loss_pct=[-0.0025, -0.005, -0.0075, -0.01, -0.0125],
             )
             print(stats)
+
+            print("\n✨ MEJORES PARÁMETROS ENCONTRADOS:")
+            best_strat = stats["_strategy"]
+            print(f"• price_pct_threshold: {best_strat.price_pct_threshold}")
+            print(f"• minutes_stop:        {best_strat.minutes_stop}")
+            print(f"• take_profit_pct:     {best_strat.take_profit_pct}")
+            print(f"• stop_loss_pct:       {best_strat.stop_loss_pct}")
 
             bt_random_forest.plot()
 

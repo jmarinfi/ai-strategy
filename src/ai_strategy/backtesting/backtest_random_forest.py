@@ -1,23 +1,24 @@
 from datetime import datetime
 
 from backtesting import Strategy
+from joblib import load
 
 from src.ai_strategy.data import CCXTFetcher, Preprocessor
-from src.ai_strategy.models.sklearn import RandomForest
 
 
 class RandomForestStrategyBacktest(Strategy):
-    price_pct_threshold = 0.001
-    n_candles_stop = 2
-    take_profit_pct = 0.003
-    stop_loss_pct = -0.002
+    price_pct_threshold = 0.02
+    minutes_stop = 15 * 4 * 4 * 60
+    take_profit_pct = 0.005
+    stop_loss_pct = -0.003
 
     def init(self):
         self.fetcher = CCXTFetcher(exchange_id="bitget")
+        self.model = load("models/random_forest_ada_usdt_15m_lags96.pkl")["model"]
 
     def next(self):
         # Skip if not enough data for indicator calculation
-        if len(self.data.df) < 120:
+        if len(self.data.df) < 150:
             return
 
         # Time-based stop: Close positions open for more than n_candles_stop + 1 candles
@@ -30,22 +31,19 @@ class RandomForestStrategyBacktest(Strategy):
                         entry_time = datetime.strptime(trade.tag, "%Y-%m-%d %H:%M:%S")
                         current_time = self.data.index[-1]
 
-                        # Calculate time difference in candles (assuming 5min candles)
+                        # Calculate time difference in candles (assuming 15min candles)
                         time_diff = (
                             current_time - entry_time
                         ).total_seconds() / 60  # minutes
-                        candles_diff = time_diff / 5  # Convert to number of candles
 
-                        # Close if open for more than n_candles_stop + 1 candles
-                        if candles_diff >= (self.n_candles_stop + 1):
-                            self.position.close()
-                            break
+                        if time_diff >= self.minutes_stop:
+                            trade.close()
 
                     except (ValueError, AttributeError):
                         pass
 
-        # Get last 120 candles for indicator calculation
-        recent_data = self.data.df.iloc[-120:].copy()
+        # Get last 150 candles for indicator calculation
+        recent_data = self.data.df.iloc[-150:].copy()
 
         # Convert backtesting.py format (uppercase) to expected format (lowercase)
         historical_df = recent_data.rename(
@@ -63,10 +61,16 @@ class RandomForestStrategyBacktest(Strategy):
             print("   ⚠️  No data after indicator calculation")
             return
 
-        model_path = "models/random_forest_ada_usdt_5m_lags48.pkl"
-        model = RandomForest(model_path)
-        predicted_close = model.predict(historical_df, n_lags=48)
+        if len(historical_df) < 96:
+            return
+
+        features_window = historical_df.iloc[-96:]
+        X_pred = features_window.values.flatten().reshape(1, -1)
+
+        predicted_close = self.model.predict(X_pred)
         current_close = self.data.Close[-1]
+        print("Predicted close: ", predicted_close)
+        print("Current close: ", current_close)
 
         price_change = predicted_close - current_close
         price_change_pct = (price_change / current_close) * 100

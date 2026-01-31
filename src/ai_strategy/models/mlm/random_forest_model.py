@@ -21,12 +21,14 @@ class RandomForestMLM:
         data: pd.DataFrame,
         n_lags_in: int,
         n_lags_out: int,
+        prediction_horizon: int,
         name_targets: list[str],
-        model=RandomForestRegressor(verbose=20, n_jobs=-1),
+        model=RandomForestRegressor(verbose=1, n_jobs=-1),
     ):
         self.data = data
         self.n_lags_in = n_lags_in
         self.n_lags_out = n_lags_out
+        self.prediction_horizon = prediction_horizon
         self.name_targets = name_targets
         self.model = model
 
@@ -36,16 +38,12 @@ class RandomForestMLM:
         cols = []
         df_input_cols = data.iloc[:, : -len(self.name_targets)]
         df_output_cols = data.iloc[:, -len(self.name_targets) :]
-        # print("\nInput columns: ")
-        # print(df_input_cols.head())
-        # print("\nOutput columns: ")
-        # print(df_output_cols.head())
 
         for i in range(self.n_lags_in, 0, -1):
             cols.append(df_input_cols.shift(i))
 
         for i in range(self.n_lags_out):
-            cols.append(df_output_cols.shift(-i))
+            cols.append(df_output_cols.shift(-self.prediction_horizon - i))
 
         agg = pd.concat(cols, axis=1)
         if dropnan:
@@ -74,9 +72,7 @@ class RandomForestMLM:
         print("\n📊 PREPARING DATA FOR TRAINING")
         print("=" * 30)
 
-        columns = [
-            c for c in self.data.columns if c not in self.name_targets
-        ] + self.name_targets
+        columns = [c for c in self.data.columns if c != "timestamp"] + self.name_targets
         series = self.data[columns]
 
         print(f"Original DataFrame shape: {self.data.shape}")
@@ -84,7 +80,6 @@ class RandomForestMLM:
         print(f"Targets: {self.name_targets}")
 
         data = self._series_to_supervised_multivariate(series)
-
         print(f"\nTransformed Data shape (supervised): {data.shape}")
 
         X_train, y_train, X_test, y_test = self._train_test_split(data, train_size)
@@ -230,6 +225,8 @@ class RandomForestMLM:
         print("=" * 30 + "\n")
 
     def predict(self, X_test: np.ndarray) -> np.ndarray:
+        print("\nPredicting...")
+        print("X_test shape: ", X_test.shape)
         return self.model.predict(X_test)
 
     def save(
@@ -241,6 +238,7 @@ class RandomForestMLM:
             "target_cols": self.name_targets,
             "n_lags_in": self.n_lags_in,
             "n_lags_out": self.n_lags_out,
+            "prediction_horizon": self.prediction_horizon,
             "timestamp": datetime.now().isoformat(),
         }
         print("\nModel data: ")

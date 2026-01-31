@@ -29,7 +29,9 @@ class BaseStrategy(ABC):
 
         # At least one bot UUID must be provided
         if not long_bot_uuid and not short_bot_uuid:
-            raise ValueError("At least one of long_bot_uuid or short_bot_uuid must be provided")
+            raise ValueError(
+                "At least one of long_bot_uuid or short_bot_uuid must be provided"
+            )
 
         self._running: bool = False
 
@@ -86,7 +88,7 @@ class BaseStrategy(ABC):
                 close=float(ohlcv_data[4]),
                 volume=float(ohlcv_data[5]),
             )
-            
+
             await self.on_candle(candle)
 
     async def stop(self) -> None:
@@ -116,21 +118,23 @@ class BaseStrategy(ABC):
             position_type: "long" or "short" (default: "long").
         """
         position_type = position_type.lower()
-        
+
         if position_type == "long":
             if not self.long_bot_uuid:
-                print(f"   ⚠️  Skipping LONG position - no long_bot_uuid configured")
+                print("   ⚠️  Skipping LONG position - no long_bot_uuid configured")
                 return
             uuid = self.long_bot_uuid
             print(f"\n📤 Opening LONG position for {symbol}...")
         elif position_type == "short":
             if not self.short_bot_uuid:
-                print(f"   ⚠️  Skipping SHORT position - no short_bot_uuid configured")
+                print("   ⚠️  Skipping SHORT position - no short_bot_uuid configured")
                 return
             uuid = self.short_bot_uuid
             print(f"\n📤 Opening SHORT position for {symbol}...")
         else:
-            raise ValueError(f"Invalid position_type: {position_type}. Must be 'long' or 'short'")
+            raise ValueError(
+                f"Invalid position_type: {position_type}. Must be 'long' or 'short'"
+            )
 
         # Send webhook to bot
         webhook = StartDealWebhook(
@@ -154,7 +158,7 @@ class BaseStrategy(ABC):
             position_type: "long" or "short" (default: "long").
         """
         position_type = position_type.lower()
-        
+
         if position_type == "long":
             if not self.long_bot_uuid:
                 return
@@ -164,7 +168,9 @@ class BaseStrategy(ABC):
                 return
             uuid = self.short_bot_uuid
         else:
-            raise ValueError(f"Invalid position_type: {position_type}. Must be 'long' or 'short'")
+            raise ValueError(
+                f"Invalid position_type: {position_type}. Must be 'long' or 'short'"
+            )
 
         print(f"\n📤 Closing {position_type.upper()} position for {symbol}...")
         # Send webhook to bot

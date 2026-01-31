@@ -20,6 +20,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
+    { name = "sambo" },
     { name = "scikit-learn" },
     { name = "seaborn" },
     { name = "ta" },
@@ -43,6 +44,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pyarrow", specifier = ">=22.0.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "sambo", specifier = ">=1.25.2" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "ta", specifier = ">=0.11.0" },
@@ -1780,6 +1782,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c9/74/b3ff8e6c8446842c3f5c837e9c3dfcfe2018ea6ecef224c710c85ef728f4/requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf", size = 134517, upload-time = "2025-08-18T20:46:02.573Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/db/4254e3eabe8020b458f1a747140d32277ec7a271daf1d235b70dc0b4e6e3/requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6", size = 64738, upload-time = "2025-08-18T20:46:00.542Z" },
+]
+
+[[package]]
+name = "sambo"
+version = "1.25.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dc/c8/3d649256cf8316157a60f03f94db3ac3bdc79b8a8af4de8b3d2e3f244269/sambo-1.25.2.tar.gz", hash = "sha256:58e08d3eb4c83c9ebb305284a210de256be9e333c13efa26ae919663818a37e5", size = 60194, upload-time = "2025-07-10T03:05:49.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/b8/fac47182d5735cdf8f02a378ad96052e67d748a685e9243ae4934a0bfcba/sambo-1.25.2-py3-none-any.whl", hash = "sha256:e67206342c3ee6ce5ef2b25b7ff3176139d073f35a4493b8067355694b721602", size = 54633, upload-time = "2025-07-10T03:05:48.532Z" },
 ]
 
 [[package]]

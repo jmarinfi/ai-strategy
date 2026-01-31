@@ -4,10 +4,10 @@ from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
+from joblib import load
 
 from src.ai_strategy.data import BaseStreamer, CCXTFetcher, Preprocessor
 from src.ai_strategy.models import Candle, Signal, SignalType
-from src.ai_strategy.models.sklearn.random_forest_model import RandomForest
 from src.ai_strategy.strategies.base import BaseStrategy
 
 
@@ -60,9 +60,8 @@ class RandomForestStrategy(BaseStrategy):
         self.n_lags = n_lags
 
         # Load the Random Forest model
-        self.model = RandomForest(model_path)
+        self.model = load(model_path)["model"]
         print(f"✅ Random Forest model loaded from {model_path}")
-        print(f"   Model config: {self.model.config}")
 
         # Track last processed candle
         self._last_candle_timestamp: int | None = None
@@ -86,7 +85,6 @@ class RandomForestStrategy(BaseStrategy):
         if current_timestamp != self._last_candle_timestamp:
             # Process the PREVIOUS candle (which is now complete)
             if self._previous_candle is not None:
-                print()  # New line after the \r updates
                 await self._process_complete_candle(self._previous_candle)
 
             # Update tracking
@@ -116,7 +114,7 @@ class RandomForestStrategy(BaseStrategy):
             print("\n📊 Fetching historical data...")
             historical_df = await self._fetch_historical_data(candle)
 
-            if historical_df is None or len(historical_df) < 50:
+            if historical_df is None or len(historical_df) < self.historical_candles:
                 print(
                     f"   ⚠️  Not enough data ({len(historical_df) if historical_df is not None else 0} candles)"
                 )
@@ -127,14 +125,23 @@ class RandomForestStrategy(BaseStrategy):
             # 2. Calculate technical indicators
             print("📈 Calculating technical indicators...")
             df_with_indicators = Preprocessor.add_technical_indicators(historical_df)
+            columns = df_with_indicators.columns
+            df_with_indicators = df_with_indicators[
+                [col for col in columns if col != "timestamp"]
+            ]
 
             if len(df_with_indicators) == 0:
                 print("   ⚠️  No data after indicator calculation")
                 return
 
+            features_window = df_with_indicators[-96:]
+            print(f"Longitud del window: {len(features_window)}")
+            X_pred = features_window.values.flatten().reshape(1, -1)
+            print(f"Shape de X_pred: {X_pred.shape}")
+
             # 3. Make prediction
             print("🤖 Making prediction...")
-            predicted_close = self.model.predict(df_with_indicators, n_lags=self.n_lags)
+            predicted_close = self.model.predict(X_pred)[0]
             current_close = candle.close
 
             # Calculate predicted movement
