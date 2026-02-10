@@ -132,7 +132,7 @@ class CCXTFetcher(BaseFetcher):
         # Determine output file path
         if output_file is None:
             safe_symbol = symbol.replace("/", "_").lower()
-            output_file = output_dir / f"{safe_symbol}_{timeframe}.parquet"
+            output_file = output_dir / f"{safe_symbol}_{timeframe}_{limit}.parquet"
 
         # Load from cache if exists
         if output_file.exists():
@@ -155,7 +155,7 @@ class CCXTFetcher(BaseFetcher):
 
         print(f"Fetching {limit} candles for {symbol} ({timeframe})")
         print(
-            f"Range: {datetime.fromtimestamp(start_ts/1000)} -> {datetime.fromtimestamp(end_ts/1000)}"
+            f"Range: {datetime.fromtimestamp(start_ts / 1000)} -> {datetime.fromtimestamp(end_ts / 1000)}"
         )
 
         df = await self.fetch_ohlcv_range(symbol, timeframe, start_ts, end_ts)
@@ -190,4 +190,3 @@ class CCXTFetcher(BaseFetcher):
     async def close(self) -> None:
         """Close the exchange connection and release resources."""
         await self.exchange.close()
-

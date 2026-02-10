@@ -4,6 +4,7 @@ from ta.momentum import AwesomeOscillatorIndicator, StochRSIIndicator, RSIIndica
 from ta.volume import AccDistIndexIndicator, ForceIndexIndicator, MFIIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 from ta.trend import ADXIndicator, EMAIndicator, IchimokuIndicator, MACD
+from smartmoneyconcepts import smc
 
 
 class Preprocessor:
@@ -88,6 +89,31 @@ class Preprocessor:
         return df.dropna(ignore_index=True)
 
     @staticmethod
+    def add_smc_indicators(df: pd.DataFrame, swing_length: int) -> pd.DataFrame:
+        if "timestamp" in df.columns:
+            df = df.sort_values("timestamp").reset_index(drop=True)
+
+        df_fvg = smc.fvg(df, join_consecutive=False)
+        df_swing_highs_lows = smc.swing_highs_lows(df, swing_length=swing_length)
+
+        df["fvg_signal"] = df_fvg["FVG"]
+        df["fvg_signal"] = df["fvg_signal"].fillna(0).astype(int)
+
+        df["HighLow"] = df_swing_highs_lows["HighLow"]
+        df["HighLow"] = df["HighLow"].fillna(0).astype(int)
+
+        adx = ADXIndicator(df["high"], df["low"], df["close"])
+        df["adx"] = adx.adx()
+        df["adx_neg"] = adx.adx_neg()
+        df["adx_pos"] = adx.adx_pos()
+
+        print(f"   ✅ Added {len(df.columns) - 6} SMC indicators")
+        print(df.head())
+        print(df.tail())
+
+        return df.dropna(ignore_index=True)
+
+    @staticmethod
     def parse_timeframe_to_minutes(timeframe: str) -> int:
         """Convert timeframe string (e.g. '15m', '1h', '4h', '1d') to minutes."""
         unit = timeframe[-1]
@@ -104,57 +130,57 @@ class Preprocessor:
         else:
             raise ValueError(f"Unsupported timeframe unit: {unit}")
 
-    @staticmethod
-    def split_sequences(sequences: np.ndarray, n_steps: int):
-        X, y = [], []
+    # @staticmethod
+    # def split_sequences(sequences: np.ndarray, n_steps: int):
+    #     X, y = [], []
 
-        for i in range(len(sequences)):
-            end_ix = i + n_steps
-            if end_ix > len(sequences) - 1:
-                break
-            seq_x, seq_y = sequences[i:end_ix, :-1], sequences[end_ix, -1]
-            X.append(seq_x)
-            y.append(seq_y)
+    #     for i in range(len(sequences)):
+    #         end_ix = i + n_steps
+    #         if end_ix > len(sequences) - 1:
+    #             break
+    #         seq_x, seq_y = sequences[i:end_ix, :-1], sequences[end_ix, -1]
+    #         X.append(seq_x)
+    #         y.append(seq_y)
 
-        return np.array(X), np.array(y)
+    #     return np.array(X), np.array(y)
 
-    @staticmethod
-    def series_to_supervised(
-        data: pd.DataFrame, n_in: int = 1, n_out: int = 1, dropnan: bool = True
-    ):
-        """Convert a time series to a supervised learning dataset.
+    # @staticmethod
+    # def series_to_supervised(
+    #     data: pd.DataFrame, n_in: int = 1, n_out: int = 1, dropnan: bool = True
+    # ):
+    #     """Convert a time series to a supervised learning dataset.
 
-        Args:
-            data: DataFrame with time series data
-            n_in: Number of previous time steps to use as input features
-            n_out: Number of future time steps to predict
-            dropnan: Whether to drop rows with NaN values
+    #     Args:
+    #         data: DataFrame with time series data
+    #         n_in: Number of previous time steps to use as input features
+    #         n_out: Number of future time steps to predict
+    #         dropnan: Whether to drop rows with NaN values
 
-        Returns:
-            DataFrame with supervised learning data
-        """
-        # Eliminar columnas "timestamp", "open", "high", "low", "volume"
-        if "timestamp" in data.columns:
-            data = data.drop("timestamp", axis=1)
-        if "open" in data.columns:
-            data = data.drop("open", axis=1)
-        if "high" in data.columns:
-            data = data.drop("high", axis=1)
-        if "low" in data.columns:
-            data = data.drop("low", axis=1)
-        if "volume" in data.columns:
-            data = data.drop("volume", axis=1)
-        print("\nDataframe without timestamp, open, high, low, volume:")
-        print(data.head())
+    #     Returns:
+    #         DataFrame with supervised learning data
+    #     """
+    #     # Eliminar columnas "timestamp", "open", "high", "low", "volume"
+    #     if "timestamp" in data.columns:
+    #         data = data.drop("timestamp", axis=1)
+    #     if "open" in data.columns:
+    #         data = data.drop("open", axis=1)
+    #     if "high" in data.columns:
+    #         data = data.drop("high", axis=1)
+    #     if "low" in data.columns:
+    #         data = data.drop("low", axis=1)
+    #     if "volume" in data.columns:
+    #         data = data.drop("volume", axis=1)
+    #     print("\nDataframe without timestamp, open, high, low, volume:")
+    #     print(data.head())
 
-        # Reorganizar columnas con "close" al final
-        cols = [col for col in data.columns if col != "close"] + ["close"]
-        data = data[cols]
-        print("\nDataframe with close column at the end:")
-        print(data.head())
+    #     # Reorganizar columnas con "close" al final
+    #     cols = [col for col in data.columns if col != "close"] + ["close"]
+    #     data = data[cols]
+    #     print("\nDataframe with close column at the end:")
+    #     print(data.head())
 
-        # Transformar a array numpy
-        values = data.values
-        print("\nArray numpy:")
-        print(values)
-        print(values.shape)
+    #     # Transformar a array numpy
+    #     values = data.values
+    #     print("\nArray numpy:")
+    #     print(values)
+    #     print(values.shape)

@@ -23,6 +23,7 @@ class RandomForestMLM:
         n_lags_out: int,
         prediction_horizon: int,
         name_targets: list[str],
+        swing_length: int,
         model=RandomForestRegressor(verbose=1, n_jobs=-1),
     ):
         self.data = data
@@ -30,6 +31,7 @@ class RandomForestMLM:
         self.n_lags_out = n_lags_out
         self.prediction_horizon = prediction_horizon
         self.name_targets = name_targets
+        self.swing_length = swing_length
         self.model = model
 
     def _series_to_supervised_multivariate(
@@ -40,7 +42,20 @@ class RandomForestMLM:
         df_output_cols = data.iloc[:, -len(self.name_targets) :]
 
         for i in range(self.n_lags_in, 0, -1):
-            cols.append(df_input_cols.shift(i))
+            # Crear copia del lote desplazado para evitar look-ahead bias
+            shifted_input = df_input_cols.shift(i).copy()
+
+            # Poner a 0 los últimos swing_length registros de la columna "HighLow"
+            if "HighLow" in shifted_input.columns:
+                shifted_input.iloc[
+                    -self.swing_length :, shifted_input.columns.get_loc("HighLow")
+                ] = 0
+
+            # Poner a 0 el último registro de la columna "fvg_signal"
+            if "fvg_signal" in shifted_input.columns:
+                shifted_input.iloc[-1, shifted_input.columns.get_loc("fvg_signal")] = 0
+
+            cols.append(shifted_input)
 
         for i in range(self.n_lags_out):
             cols.append(df_output_cols.shift(-self.prediction_horizon - i))
@@ -72,7 +87,11 @@ class RandomForestMLM:
         print("\n📊 PREPARING DATA FOR TRAINING")
         print("=" * 30)
 
-        columns = [c for c in self.data.columns if c != "timestamp"] + self.name_targets
+        columns = [
+            c
+            for c in self.data.columns
+            if c not in ["timestamp", "open", "high", "low"]
+        ] + self.name_targets
         series = self.data[columns]
 
         print(f"Original DataFrame shape: {self.data.shape}")
