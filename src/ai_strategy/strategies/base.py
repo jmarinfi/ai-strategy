@@ -6,6 +6,9 @@ from src.ai_strategy.models import (
     CloseDealWebhook,
     Signal,
     StartDealWebhook,
+    AddFundsWebhook,
+    AssetType,
+    FundType,
     WebhookRequest,
 )
 
@@ -49,7 +52,7 @@ class BaseStrategy(ABC):
         ...
 
     @abstractmethod
-    def generate_signal(self, candle: Candle) -> Signal:
+    def generate_signal(self, candle: Candle) -> Signal | None:
         """Generate a trading signal based on the candle data.
 
         Args:
@@ -183,6 +186,39 @@ class BaseStrategy(ABC):
             print(f"   ✅ {position_type.upper()} position closed successfully")
         else:
             print(f"   ❌ Failed to close {position_type.upper()} position")
+
+    async def add_funds_quote(
+        self, symbol: str, position_type: str, perc: float
+    ) -> None:
+        position_type = position_type.lower()
+
+        if position_type == "long":
+            if not self.long_bot_uuid:
+                return
+            uuid = self.long_bot_uuid
+        elif position_type == "short":
+            if not self.short_bot_uuid:
+                return
+            uuid = self.short_bot_uuid
+        else:
+            raise ValueError(
+                f"Invalid position_type: {position_type}. Must be 'long' or 'short'"
+            )
+
+        print(f"\n📤 Adding funds to {symbol}...")
+
+        webhook = AddFundsWebhook(
+            uuid=uuid,
+            asset=AssetType.QUOTE,
+            qty=perc,
+            type=FundType.PERC,
+            symbol=symbol,
+        )
+        success = await self.send_webhook(webhook)
+        if success:
+            print(f"   ✅ Added funds to {symbol}")
+        else:
+            print(f"   ❌ Failed to add funds to {symbol}")
 
     async def send_webhook(self, webhook: WebhookRequest) -> bool:
         """Send a webhook to the trading bot.

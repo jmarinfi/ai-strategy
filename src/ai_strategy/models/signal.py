@@ -39,12 +39,8 @@ class Signal(BaseModel):
     reason: str | None = Field(None, description="Human-readable reason for signal")
 
     # Trailing configuration (passed through to webhook)
-    entry_trailing: bool = Field(
-        False, description="Whether to use trailing on entry"
-    )
-    exit_trailing: bool = Field(
-        False, description="Whether to use trailing on exit"
-    )
+    entry_trailing: bool = Field(False, description="Whether to use trailing on entry")
+    exit_trailing: bool = Field(False, description="Whether to use trailing on exit")
     entry_trailing_pct: float = Field(
         0.0, ge=0.0, description="Trailing percentage for entry"
     )
