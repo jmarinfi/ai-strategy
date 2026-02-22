@@ -25,6 +25,7 @@ class MeanReversionDCA(BaseStrategy):
         window_dev_bb: int,
         max_orders_dca: int,
         min_pct_objective: float,
+        leverage: int,
     ):
         super().__init__(
             symbols=symbols,
@@ -38,6 +39,7 @@ class MeanReversionDCA(BaseStrategy):
         self.window_dev_bb = window_dev_bb
         self.max_orders_dca = max_orders_dca
         self.min_pct_objective = min_pct_objective
+        self.leverage = leverage
 
         self._last_candle_timestamp: int | None = None
         self._historical: pd.DataFrame | None = None
@@ -58,13 +60,18 @@ class MeanReversionDCA(BaseStrategy):
         )
         print(f"📥 Candle update: {dt_str} | Close: {candle.close}")
 
+        if self._last_candle_timestamp is None:
+            self._last_candle_timestamp = current_timestamp
+
         await self._process_candle(candle)
 
-    async def _fetch_historical_data(self, candle: Candle) -> pd.DataFrame | None:
+    async def _fetch_historical_data(
+        self, last_candle_timestamp: int, symbol: str
+    ) -> pd.DataFrame | None:
         try:
             fetcher = CCXTFetcher(exchange_id="bitget", sandbox=False)
 
-            end_ts = candle.timestamp
+            end_ts = last_candle_timestamp
             start_ts = (
                 end_ts
                 - (self.window_bb + 1)
@@ -73,7 +80,7 @@ class MeanReversionDCA(BaseStrategy):
                 * 1000
             )
             historical_df = await fetcher.fetch_ohlcv_range(
-                candle.symbol, self.timeframe, start_ts, end_ts
+                symbol, self.timeframe, start_ts, end_ts
             )
             await fetcher.close()
 
@@ -86,13 +93,12 @@ class MeanReversionDCA(BaseStrategy):
     def _update_bb_indicators(self, close: float) -> None:
         all_closes = np.append(self._historical["close"].values, close)
         closes = all_closes[-self.window_bb :]
+        sma = closes.mean()
+        std = closes.std()
 
-        mavg = np.mean(closes)
-        mstd = np.std(closes)  # ddof=0 by default, same as ta library
-
-        self._last_bb_mid = mavg
-        self._last_bb_high = mavg + self.window_dev_bb * mstd
-        self._last_bb_low = mavg - self.window_dev_bb * mstd
+        self._last_bb_mid = sma
+        self._last_bb_high = sma + self.window_dev_bb * std
+        self._last_bb_low = sma - self.window_dev_bb * std
 
     async def _process_candle(self, candle: Candle) -> None:
         try:
@@ -101,7 +107,9 @@ class MeanReversionDCA(BaseStrategy):
                 candle.timestamp != self._last_candle_timestamp
                 or self._historical is None
             ):
-                self._historical = await self._fetch_historical_data(candle)
+                self._historical = await self._fetch_historical_data(
+                    self._last_candle_timestamp, candle.symbol
+                )
                 self._last_candle_timestamp = candle.timestamp
                 if self._historical is None or len(self._historical) < self.window_bb:
                     print("Not enough data to process candle")
@@ -140,7 +148,9 @@ class MeanReversionDCA(BaseStrategy):
         if (
             self._is_long_position
             and self._num_dca_long < self.max_orders_dca
-            and candle.close < self._last_long_price * (1 - self.min_pct_objective)
+            and candle.close
+            < self._last_long_price
+            * (1 - self.min_pct_objective * (2**self._num_dca_long))
             and candle.close < self._last_bb_low
         ):
             self._num_dca_long += 1
@@ -150,7 +160,7 @@ class MeanReversionDCA(BaseStrategy):
             await self.add_funds_quote(
                 symbol=candle.symbol,
                 position_type="long",
-                perc=1 / (self.max_orders_dca * 2 + 2),
+                perc=100,
             )
             return
 
@@ -158,7 +168,9 @@ class MeanReversionDCA(BaseStrategy):
         if (
             self._is_short_position
             and self._num_dca_short < self.max_orders_dca
-            and candle.close > self._last_short_price * (1 + self.min_pct_objective)
+            and candle.close
+            > self._last_short_price
+            * (1 + self.min_pct_objective * (2**self._num_dca_short))
             and candle.close > self._last_bb_high
         ):
             self._num_dca_short += 1
@@ -168,7 +180,7 @@ class MeanReversionDCA(BaseStrategy):
             await self.add_funds_quote(
                 symbol=candle.symbol,
                 position_type="short",
-                perc=1 / (self.max_orders_dca * 2 + 2),
+                perc=100,
             )
             return
 

@@ -149,7 +149,7 @@ class AddFundsWebhook(BaseModel):
     asset: AssetType
     qty: str = Field(..., description="Quantity as string")
     type: FundType = Field(..., description="Percentage or fixed")
-    symbol: str | None = Field(None, description="Trading symbol (BTC_USDT format)")
+    # symbol: str | None = Field(None, description="Trading symbol (BTC_USDT format)")
 
     model_config = {
         "use_enum_values": True,

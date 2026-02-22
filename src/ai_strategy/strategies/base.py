@@ -209,10 +209,10 @@ class BaseStrategy(ABC):
 
         webhook = AddFundsWebhook(
             uuid=uuid,
-            asset=AssetType.QUOTE,
-            qty=perc,
-            type=FundType.PERC,
-            symbol=symbol,
+            asset=AssetType.QUOTE.value,
+            qty=str(perc),
+            type=FundType.PERC.value,
+            # symbol=symbol,
         )
         success = await self.send_webhook(webhook)
         if success:
@@ -239,6 +239,18 @@ class BaseStrategy(ABC):
         # Add symbol if present (for StartDealWebhook and CloseDealWebhook)
         if hasattr(webhook, "symbol"):
             payload["symbol"] = webhook.symbol
+
+        # Add asset if present (for AddFundsWebhook)
+        if hasattr(webhook, "asset"):
+            payload["asset"] = webhook.asset
+
+        # Add qty if present (for AddFundsWebhook)
+        if hasattr(webhook, "qty"):
+            payload["qty"] = webhook.qty
+
+        # Add type if present (for AddFundsWebhook)
+        if hasattr(webhook, "type"):
+            payload["type"] = webhook.type
 
         print(f"   🌐 Sending webhook to {self.webhook_url}")
         print(f"   📦 Payload: {payload}")

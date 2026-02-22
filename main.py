@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 from datetime import datetime
+import sys
 
 import pandas as pd
 import numpy as np
@@ -19,6 +20,7 @@ DATA_DIR = Path("data/raw")
 SYMBOL = "PEPE/USDT"
 TIMEFRAME = "15m"
 LIMIT_CANDLES = 100_000
+LEVERAGE = 5
 
 # Webhook configuration
 WEBHOOK_URL = "http://192.168.1.132:7503/trade_signal"
@@ -31,6 +33,24 @@ PREDICTION_HORIZON = 4  # How many time steps to predict into the future
 
 # MODE: 'train' or 'live' or 'backtest'
 MODE = "live"
+
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+
+    def write(self, data):
+        for f in self.files:
+            f.write(data)
+            f.flush()
+
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+
+log_file = open("app.log", "w")
+sys.stdout = Tee(sys.stdout, log_file)
 
 
 async def main():
@@ -157,7 +177,8 @@ async def main():
                     window_bb=6,
                     window_dev_bb=1.65,
                     max_orders_dca=9,
-                    min_pct_objective=0.5 / 100,
+                    min_pct_objective=0.4 / 100,
+                    leverage=LEVERAGE,
                 )
 
                 print("🚀 Starting strategy...")
